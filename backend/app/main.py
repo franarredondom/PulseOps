@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from .checker import check_many, check_one, persist_result
@@ -19,6 +19,10 @@ SessionDep = Annotated[Session, Depends(get_session)]
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(engine)
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as connection:
+            for table in ("monitors", "check_results", "incidents"):
+                connection.execute(text(f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY"))
     yield
 
 

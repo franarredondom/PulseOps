@@ -84,11 +84,25 @@ Backend:
 
 ## Despliegue gratuito
 
-1. Publica el dashboard en Cloudflare Pages, Sites o Vercel.
-2. Publica `backend/` como Web Service gratuito en Render usando su Dockerfile.
-3. Crea un proyecto gratuito de Supabase y copia su cadena PostgreSQL en `DATABASE_URL`.
-4. Añade `PULSEOPS_API_URL` y `PULSEOPS_CRON_SECRET` como secrets del repositorio.
-5. Activa GitHub Actions; `uptime-checks.yml` ejecutará los monitores cada diez minutos.
+### 1. Base de datos en Supabase
+
+1. Crea un proyecto gratuito.
+2. Abre **Connect** y copia la cadena de **Session pooler** (puerto `5432`). Es la opción compatible con backends persistentes que necesitan IPv4.
+3. La API crea las tablas al iniciar. También se incluye la migración reproducible `supabase/migrations/20260722210000_initial_schema.sql`.
+
+No publiques la cadena: contiene la contraseña de la base de datos.
+
+### 2. API en Render
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/franarredondom/PulseOps)
+
+El Blueprint `render.yaml` crea un Web Service gratuito desde `backend/Dockerfile`. Durante la creación, Render solicitará `DATABASE_URL`; pega ahí la cadena de Session pooler de Supabase. `CRON_SECRET` se genera automáticamente.
+
+### 3. Dashboard y scheduler
+
+1. Define `NEXT_PUBLIC_API_URL` con la URL `onrender.com` de la API antes de compilar el dashboard.
+2. En GitHub agrega `PULSEOPS_API_URL` y `PULSEOPS_CRON_SECRET` como secrets del repositorio.
+3. Activa GitHub Actions; `uptime-checks.yml` ejecutará los monitores cada diez minutos.
 
 Render puede dormir la API gratuita tras un período sin tráfico. El workflow programado funciona como entrada legítima para ejecutar las comprobaciones pendientes, aunque el primer intento puede tardar mientras el servicio despierta.
 

@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: pulseops-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://pulseops-fran.fraanciscaam123.chatgpt.site
+      - key: CRON_SECRET
+        generateValue: true
+      - key: FAILURE_THRESHOLD
+        value: "3"
