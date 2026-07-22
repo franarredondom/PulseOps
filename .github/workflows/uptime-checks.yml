@@ -1,0 +1,20 @@
+name: Scheduled uptime checks
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake API and run due monitors
+        env:
+          API_URL: ${{ secrets.PULSEOPS_API_URL }}
+          CRON_SECRET: ${{ secrets.PULSEOPS_CRON_SECRET }}
+        run: |
+          test -n "$API_URL"
+          curl --fail --retry 3 --retry-delay 15 \
+            -X POST "$API_URL/api/checks/run" \
+            -H "X-Cron-Secret: $CRON_SECRET"

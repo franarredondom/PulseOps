@@ -1,0 +1,27 @@
+services:
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: sqlite:////data/pulseops.db
+      CORS_ORIGINS: http://localhost:3000
+      CRON_SECRET: local-development-secret
+    ports:
+      - "8000:8000"
+    volumes:
+      - pulseops-data:/data
+
+  dashboard:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
+    volumes:
+      - .:/app
+      - dashboard-modules:/app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pulseops-data:
+  dashboard-modules:
