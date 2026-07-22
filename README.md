@@ -79,6 +79,7 @@ Backend:
 | --- | --- |
 | `DATABASE_URL` | SQLite local o conexión PostgreSQL de Supabase |
 | `CORS_ORIGINS` | Orígenes autorizados, separados por comas |
+| `CORS_ORIGIN_REGEX` | Expresión para autorizar el dominio generado del dashboard |
 | `CRON_SECRET` | Protege el endpoint ejecutado por el scheduler |
 | `FAILURE_THRESHOLD` | Fallos consecutivos necesarios para abrir incidente |
 
@@ -96,11 +97,11 @@ No publiques la cadena: contiene la contraseña de la base de datos.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/franarredondom/PulseOps)
 
-El Blueprint `render.yaml` crea un Web Service gratuito desde `backend/Dockerfile`. Durante la creación, Render solicitará `DATABASE_URL`; pega ahí la cadena de Session pooler de Supabase. `CRON_SECRET` se genera automáticamente.
+El Blueprint `render.yaml` crea la API como Web Service gratuito desde `backend/Dockerfile` y el dashboard como Static Site gratuito. Durante la creación, Render solicitará `DATABASE_URL`; pega ahí la cadena de Session pooler de Supabase. `CRON_SECRET` se genera automáticamente.
 
-### 3. Dashboard y scheduler
+### 3. Dashboard público y scheduler
 
-1. Define `NEXT_PUBLIC_API_URL` con la URL `onrender.com` de la API antes de compilar el dashboard.
+1. Sincroniza nuevamente el Blueprint para crear `pulseops-dashboard` con su propia URL pública `onrender.com`.
 2. En GitHub agrega `PULSEOPS_API_URL` y `PULSEOPS_CRON_SECRET` como secrets del repositorio.
 3. Activa GitHub Actions; `uptime-checks.yml` ejecutará los monitores cada diez minutos.
 

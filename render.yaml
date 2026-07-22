@@ -13,7 +13,27 @@ services:
         sync: false
       - key: CORS_ORIGINS
         value: https://pulseops-fran.fraanciscaam123.chatgpt.site
+      - key: CORS_ORIGIN_REGEX
+        value: ^https://pulseops-dashboard(?:-[a-z0-9]+)?\.onrender\.com$
       - key: CRON_SECRET
         generateValue: true
       - key: FAILURE_THRESHOLD
         value: "3"
+
+  - type: web
+    name: pulseops-dashboard
+    runtime: static
+    buildCommand: npm ci && npm run build:static
+    staticPublishPath: ./dist-static
+    autoDeployTrigger: commit
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
