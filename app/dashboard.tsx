@@ -65,7 +65,9 @@ const statusCopy: Record<MonitorStatus, string> = {
   paused: "Pausado",
 };
 
-const apiUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+const apiUrl = (
+  process.env.NEXT_PUBLIC_API_URL || "https://pulseops-api-qlqu.onrender.com"
+).replace(/\/$/, "");
 
 type ApiMonitor = {
   id: string;
@@ -103,9 +105,7 @@ export function Dashboard() {
     if (!apiUrl) return;
     fetch(`${apiUrl}/api/monitors`)
       .then((response) => response.ok ? response.json() as Promise<ApiMonitor[]> : Promise.reject())
-      .then((items) => {
-        if (items.length) setMonitors(items.map(fromApi));
-      })
+      .then((items) => setMonitors(items.map(fromApi)))
       .catch(() => setNotice("La API está iniciando; mostramos datos de demostración."));
   }, []);
 
