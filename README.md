@@ -1,6 +1,6 @@
 # PulseOps
 
-PulseOps es una plataforma real de observabilidad HTTP. Recibe una URL pública, ejecuta una comprobación desde el backend, mide latencia y código de respuesta, conserva el historial en PostgreSQL y abre o resuelve incidentes automáticamente.
+PulseOps es un auditor web y plataforma de observabilidad HTTP. Recibe una página pública, examina su HTML y respuesta real, puntúa SEO, seguridad, accesibilidad y rendimiento, detecta tecnologías y entrega mejoras concretas. El monitoreo continuo conserva además disponibilidad, latencia e incidentes en PostgreSQL.
 
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.116-009688?logo=fastapi&logoColor=white)
@@ -10,7 +10,13 @@ PulseOps es una plataforma real de observabilidad HTTP. Recibe una URL pública,
 
 ## Funcionalidades
 
-- Análisis inmediato de cualquier URL HTTP/HTTPS pública.
+- Auditoría técnica real de páginas HTML públicas, sin datos ficticios.
+- Puntajes de rendimiento HTTP, SEO, accesibilidad básica y seguridad.
+- Revisión de títulos, descripciones, H1, canonical, idioma, imágenes, enlaces y Open Graph.
+- Comprobación de robots.txt, sitemap.xml, HTTPS, compresión y cabeceras de seguridad.
+- Detección no invasiva de tecnologías visibles y recomendaciones ordenadas por impacto.
+- Historial persistente de informes y eliminación individual.
+- Monitoreo inmediato de cualquier URL HTTP/HTTPS pública.
 - Estado operativo, degradado o caído basado en respuesta y latencia reales.
 - Historial de comprobaciones y disponibilidad calculada desde PostgreSQL.
 - Creación y resolución automática de incidentes después de fallos consecutivos.
@@ -24,8 +30,9 @@ PulseOps es una plataforma real de observabilidad HTTP. Recibe una URL pública,
 ```text
 React + Vite ───────► FastAPI ─────────► PostgreSQL / Supabase
                             │
-                            ├── comprobaciones HTTP concurrentes
-                            ├── historial y métricas agregadas
+                            ├── auditor de HTML, SEO y accesibilidad
+                            ├── análisis HTTP y cabeceras de seguridad
+                            ├── comprobaciones concurrentes de monitores
                             └── motor automático de incidentes
 
 GitHub Actions ─────► POST /api/checks/run cada 10 minutos
@@ -99,7 +106,10 @@ Para activar las comprobaciones programadas, agrega en GitHub los secretos `PULS
 | Método | Ruta | Descripción |
 | --- | --- | --- |
 | `GET` | `/health` | Salud de API y base de datos |
-| `POST` | `/api/analyze` | Guarda una URL y la analiza inmediatamente |
+| `POST` | `/api/audits` | Audita una página real y guarda el informe |
+| `GET` | `/api/audits` | Historial reciente de auditorías |
+| `GET/DELETE` | `/api/audits/{id}` | Consulta o elimina un informe |
+| `POST` | `/api/analyze` | Guarda un monitor y lo comprueba inmediatamente |
 | `GET/POST` | `/api/monitors` | Lista o crea monitores |
 | `PATCH/DELETE` | `/api/monitors/{id}` | Actualiza o elimina un monitor |
 | `POST` | `/api/monitors/{id}/check` | Ejecuta una comprobación inmediata |
@@ -113,5 +123,6 @@ Para activar las comprobaciones programadas, agrega en GitHub los secretos `PULS
 - Los secretos y archivos `.env` están excluidos del repositorio.
 - El scheduler exige `X-Cron-Secret`.
 - El checker rechaza IP privadas, loopback, link-local y redes reservadas.
+- El auditor vuelve a validar cada destino durante las redirecciones y limita el HTML a 2 MB.
 - La concurrencia está limitada a diez solicitudes.
 - La instancia pública es un workspace compartido. Para múltiples usuarios independientes, la siguiente evolución recomendada es autenticación y aislamiento por workspace.

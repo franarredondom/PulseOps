@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
 from app.checker import ProbeResult, ensure_public_target  # noqa: E402
+from app.auditor import FetchedPage, build_report  # noqa: E402
 from app.models import ServiceStatus  # noqa: E402
 
 
@@ -79,3 +80,63 @@ def test_analyze_persists_a_real_check(monkeypatch: pytest.MonkeyPatch) -> None:
         assert client.get("/api/overview").json()["availabilityPercent"] == 100.0
 
         assert client.delete(f"/api/monitors/{payload['monitor']['id']}").status_code == 204
+
+
+def test_audit_report_uses_real_html_signals() -> None:
+    html = b"""<!doctype html><html lang="es"><head>
+    <title>Una pagina preparada para buscadores</title>
+    <meta name="description" content="Esta descripcion explica claramente el contenido de la pagina y tiene una longitud suficientemente util para buscadores y personas interesadas.">
+    <meta name="viewport" content="width=device-width"><link rel="canonical" href="https://example.com/">
+    <meta property="og:title" content="Example"><meta property="og:description" content="Description">
+    </head><body><h1>Titulo principal</h1><img src="hero.jpg" alt="Equipo trabajando">
+    <a href="/contacto">Contacto</a><a href="https://external.example">Referencia externa</a></body></html>"""
+    report = build_report(
+        FetchedPage(
+            requested_url="https://example.com/",
+            final_url="https://example.com/",
+            status_code=200,
+            latency_ms=120,
+            body=html,
+            headers={
+                "content-type": "text/html; charset=utf-8",
+                "content-encoding": "br",
+                "strict-transport-security": "max-age=31536000",
+                "content-security-policy": "default-src 'self'",
+                "x-content-type-options": "nosniff",
+                "x-frame-options": "DENY",
+                "referrer-policy": "strict-origin",
+                "permissions-policy": "camera=()",
+            },
+            redirects=[],
+        ),
+        robots_exists=True,
+        sitemap_exists=True,
+    )
+    assert report["scores"]["overall"] >= 90
+    assert report["page"]["h1Count"] == 1
+    assert report["content"]["imagesWithAlt"] == 1
+    assert report["content"]["internalLinks"] == 1
+    assert report["content"]["externalLinks"] == 1
+
+
+def test_audit_endpoint_persists_report(monkeypatch: pytest.MonkeyPatch) -> None:
+    report = {
+        "scores": {"overall": 80, "performance": 90, "seo": 80, "accessibility": 75, "security": 75},
+        "page": {"title": "Example"},
+        "http": {"finalUrl": "https://example.com/", "statusCode": 200, "latencyMs": 125.5, "sizeBytes": 2048},
+        "seo": {}, "content": {}, "security": {}, "technologies": [], "recommendations": [], "scope": "test",
+    }
+
+    async def fake_audit(_: str) -> dict[str, object]:
+        return report
+
+    monkeypatch.setattr("app.main.audit_website", fake_audit)
+    with TestClient(app) as client:
+        created = client.post("/api/audits", json={"url": "https://example.com"})
+        assert created.status_code == 201
+        payload = created.json()
+        assert payload["overall_score"] == 80
+        assert payload["hostname"] == "example.com"
+        assert client.get(f"/api/audits/{payload['id']}").status_code == 200
+        assert any(item["id"] == payload["id"] for item in client.get("/api/audits").json())
+        assert client.delete(f"/api/audits/{payload['id']}").status_code == 204

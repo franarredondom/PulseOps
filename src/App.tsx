@@ -1,358 +1,112 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useState } from "react";
 
+type View = "Auditorías" | "Monitoreo" | "Incidentes";
 type MonitorStatus = "unknown" | "operational" | "degraded" | "down" | "paused";
-
-type Monitor = {
-  id: string;
-  name: string;
-  url: string;
-  interval_minutes: number;
-  timeout_seconds: number;
-  expected_status: number;
-  latency_threshold_ms: number;
-  is_active: boolean;
-  status: MonitorStatus;
-  consecutive_failures: number;
-  last_latency_ms: number | null;
-  last_checked_at: string | null;
-  created_at: string;
+type Recommendation = { category: string; severity: "alta" | "media" | "baja"; title: string; detail: string };
+type Report = {
+  page: { title: string; description: string; language: string; canonical: string; h1Count: number };
+  http: { redirects: string[]; compressed: boolean };
+  seo: { robotsTxt: boolean; sitemapXml: boolean };
+  content: { images: number; imagesWithAlt: number; internalLinks: number; externalLinks: number };
+  security: { https: boolean; presentHeaders: string[]; missingHeaders: string[] };
+  technologies: string[]; recommendations: Recommendation[]; scope: string;
 };
+type Audit = { id:string; url:string; final_url:string; hostname:string; status_code:number; latency_ms:number; size_bytes:number; overall_score:number; performance_score:number; seo_score:number; accessibility_score:number; security_score:number; report:Report; created_at:string };
+type Monitor = { id:string; name:string; url:string; is_active:boolean; status:MonitorStatus; last_latency_ms:number|null; last_checked_at:string|null };
+type Check = { id:string; monitor_id:string; status:MonitorStatus };
+type Incident = { id:string; monitor_name:string; title:string; status:"open"|"resolved"; cause:string|null; started_at:string; resolved_at:string|null };
+type Overview = { activeMonitors:number; openIncidents:number; averageLatencyMs:number|null; availabilityPercent:number|null; totalChecks:number };
 
-type Check = {
-  id: string;
-  monitor_id: string;
-  monitor_name: string;
-  monitor_url: string;
-  status: MonitorStatus;
-  status_code: number | null;
-  latency_ms: number | null;
-  error: string | null;
-  checked_at: string;
-};
+const API = (import.meta.env.VITE_API_URL || "https://pulseops-api-qlqu.onrender.com").replace(/\/$/, "");
+const statuses: Record<MonitorStatus,string> = { unknown:"Sin revisar", operational:"Operativo", degraded:"Lento", down:"Caído", paused:"Pausado" };
 
-type Incident = {
-  id: string;
-  monitor_id: string;
-  monitor_name: string;
-  monitor_url: string;
-  title: string;
-  status: "open" | "resolved";
-  cause: string | null;
-  started_at: string;
-  resolved_at: string | null;
-};
-
-type Overview = {
-  monitors: number;
-  activeMonitors: number;
-  openIncidents: number;
-  averageLatencyMs: number | null;
-  availabilityPercent: number | null;
-  totalChecks: number;
-  statusCounts: Record<MonitorStatus, number>;
-};
-
-type Analysis = {
-  monitor: Monitor;
-  check: Omit<Check, "monitor_name" | "monitor_url">;
-};
-
-const apiUrl = (import.meta.env.VITE_API_URL || "https://pulseops-api-qlqu.onrender.com").replace(/\/$/, "");
-
-const statusCopy: Record<MonitorStatus, string> = {
-  unknown: "Sin analizar",
-  operational: "Operativo",
-  degraded: "Degradado",
-  down: "Caído",
-  paused: "Pausado",
-};
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiUrl}${path}`, init);
+async function request<T>(path:string, init?:RequestInit):Promise<T> {
+  const response = await fetch(`${API}${path}`, init);
   if (!response.ok) {
-    const payload = await response.json().catch(() => null) as { detail?: string } | null;
-    throw new Error(payload?.detail || `La API respondió con estado ${response.status}`);
+    const data = await response.json().catch(() => null) as {detail?:string}|null;
+    throw new Error(data?.detail || `La API respondió con estado ${response.status}`);
   }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
-
-function relativeTime(value: string | null): string {
+const normalize = (url:string) => /^https?:\/\//i.test(url) ? url : `https://${url}`;
+const age = (value:string|null) => {
   if (!value) return "Sin comprobaciones";
-  const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000));
-  if (seconds < 60) return `Hace ${seconds} s`;
-  if (seconds < 3600) return `Hace ${Math.floor(seconds / 60)} min`;
-  if (seconds < 86400) return `Hace ${Math.floor(seconds / 3600)} h`;
+  const minutes = Math.max(0, Math.floor((Date.now()-new Date(value).getTime())/60000));
+  if (minutes < 1) return "Ahora"; if (minutes < 60) return `Hace ${minutes} min`; if (minutes < 1440) return `Hace ${Math.floor(minutes/60)} h`;
   return new Date(value).toLocaleDateString("es-CL");
-}
-
-function durationSince(value: string): string {
-  const minutes = Math.max(1, Math.round((Date.now() - new Date(value).getTime()) / 60000));
-  if (minutes < 60) return `${minutes} min`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} h`;
-  return `${Math.floor(minutes / 1440)} d`;
-}
-
-function checkMessage(check: Check): string {
-  if (check.error) return check.error;
-  const http = check.status_code ? `HTTP ${check.status_code}` : "Sin código HTTP";
-  const latency = check.latency_ms != null ? ` · ${Math.round(check.latency_ms)} ms` : "";
-  return `${http}${latency}`;
-}
+};
+const bytes = (value:number) => value < 1e6 ? `${(value/1e3).toFixed(1)} KB` : `${(value/1e6).toFixed(2)} MB`;
+const tone = (score:number) => score >= 80 ? "good" : score >= 55 ? "medium" : "poor";
 
 export default function App() {
-  const [activeView, setActiveView] = useState("Resumen");
-  const [monitors, setMonitors] = useState<Monitor[]>([]);
-  const [checks, setChecks] = useState<Check[]>([]);
-  const [incidents, setIncidents] = useState<Incident[]>([]);
-  const [overview, setOverview] = useState<Overview | null>(null);
-  const [showAnalyzer, setShowAnalyzer] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [view,setView] = useState<View>("Auditorías");
+  const [audits,setAudits] = useState<Audit[]>([]); const [selected,setSelected] = useState<Audit|null>(null);
+  const [monitors,setMonitors] = useState<Monitor[]>([]); const [checks,setChecks] = useState<Check[]>([]);
+  const [incidents,setIncidents] = useState<Incident[]>([]); const [overview,setOverview] = useState<Overview|null>(null);
+  const [loading,setLoading] = useState(true); const [auditing,setAuditing] = useState(false); const [monitorModal,setMonitorModal] = useState(false);
+  const [error,setError] = useState(""); const [notice,setNotice] = useState("");
 
   const refresh = useCallback(async () => {
     try {
-      const [monitorData, overviewData, incidentData, checkData] = await Promise.all([
-        request<Monitor[]>("/api/monitors"),
-        request<Overview>("/api/overview"),
-        request<Incident[]>("/api/incidents"),
-        request<Check[]>("/api/checks/recent?limit=120"),
-      ]);
-      setMonitors(monitorData);
-      setOverview(overviewData);
-      setIncidents(incidentData);
-      setChecks(checkData);
-      setError("");
-    } catch (refreshError) {
-      setError(refreshError instanceof Error ? refreshError.message : "No fue posible conectar con PulseOps API");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+      const [a,m,c,i,o] = await Promise.all([request<Audit[]>("/api/audits?limit=40"),request<Monitor[]>("/api/monitors"),request<Check[]>("/api/checks/recent?limit=120"),request<Incident[]>("/api/incidents"),request<Overview>("/api/overview")]);
+      setAudits(a); setSelected(current => current ? a.find(item=>item.id===current.id)||a[0]||null : a[0]||null);
+      setMonitors(m); setChecks(c); setIncidents(i); setOverview(o); setError("");
+    } catch (err) { setError(err instanceof Error ? err.message : "No fue posible conectar con PulseOps"); }
+    finally { setLoading(false); }
+  },[]);
+  useEffect(()=>{ void refresh(); },[refresh]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const checksByMonitor = useMemo(() => {
-    const grouped = new Map<string, Check[]>();
-    for (const check of checks) {
-      const current = grouped.get(check.monitor_id) || [];
-      current.push(check);
-      grouped.set(check.monitor_id, current);
-    }
-    return grouped;
-  }, [checks]);
-
-  async function analyze(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const url = String(form.get("url") || "").trim();
-    const name = String(form.get("name") || "").trim();
-    setAnalyzing(true);
-    setNotice("");
-    try {
-      const result = await request<Analysis>("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url,
-          name: name || undefined,
-          latency_threshold_ms: Number(form.get("latency") || 750),
-        }),
-      });
-      const latency = result.check.latency_ms == null ? "sin latencia disponible" : `${Math.round(result.check.latency_ms)} ms`;
-      setNotice(`${result.monitor.name}: ${statusCopy[result.check.status]} · ${latency}`);
-      setShowAnalyzer(false);
-      await refresh();
-    } catch (analysisError) {
-      setNotice(analysisError instanceof Error ? analysisError.message : "No fue posible analizar la URL");
-    } finally {
-      setAnalyzing(false);
-    }
+  async function audit(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const form=event.currentTarget; const url=normalize(String(new FormData(form).get("url")||"").trim());
+    setAuditing(true); setError("");
+    try { const result=await request<Audit>("/api/audits",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url})}); setAudits(current=>[result,...current]); setSelected(result); form.reset(); setNotice(`Auditoría completada para ${result.hostname}`); }
+    catch(err){ setError(err instanceof Error?err.message:"No fue posible auditar el sitio"); }
+    finally{ setAuditing(false); }
   }
+  async function deleteAudit(item:Audit){ if(!confirm(`¿Eliminar la auditoría de ${item.hostname}?`))return; try{await request(`/api/audits/${item.id}`,{method:"DELETE"});const next=audits.filter(a=>a.id!==item.id);setAudits(next);setSelected(next[0]||null);}catch(err){setNotice(err instanceof Error?err.message:"No fue posible eliminarla");} }
+  async function createMonitor(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=event.currentTarget,data=new FormData(form);setAuditing(true);try{await request("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:normalize(String(data.get("url")||"")),name:String(data.get("name")||"")})});setMonitorModal(false);form.reset();await refresh();setNotice("Monitor creado y comprobado.");}catch(err){setNotice(err instanceof Error?err.message:"No fue posible crear el monitor");}finally{setAuditing(false);}}
+  async function monitorAction(item:Monitor, action:"check"|"toggle"|"delete") { try { if(action==="delete"&&!confirm(`¿Eliminar ${item.name} y su historial?`))return; const path=action==="check"?`/api/monitors/${item.id}/check`:`/api/monitors/${item.id}`; await request(path,{method:action==="check"?"POST":action==="delete"?"DELETE":"PATCH",headers:action==="toggle"?{"Content-Type":"application/json"}:undefined,body:action==="toggle"?JSON.stringify({is_active:!item.is_active}):undefined});await refresh();}catch(err){setNotice(err instanceof Error?err.message:"La operación falló");} }
 
-  async function runCheck(monitor: Monitor) {
-    setNotice(`Analizando ${monitor.name}…`);
-    try {
-      const result = await request<Omit<Check, "monitor_name" | "monitor_url">>(`/api/monitors/${monitor.id}/check`, { method: "POST" });
-      const latency = result.latency_ms == null ? "sin respuesta" : `${Math.round(result.latency_ms)} ms`;
-      setNotice(`${monitor.name}: ${statusCopy[result.status]} · ${latency}`);
-      await refresh();
-    } catch (checkError) {
-      setNotice(checkError instanceof Error ? checkError.message : "La comprobación falló");
-    }
-  }
-
-  async function toggleMonitor(monitor: Monitor) {
-    try {
-      await request<Monitor>(`/api/monitors/${monitor.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ is_active: !monitor.is_active }),
-      });
-      setNotice(`${monitor.name} fue ${monitor.is_active ? "pausado" : "activado"}.`);
-      await refresh();
-    } catch (toggleError) {
-      setNotice(toggleError instanceof Error ? toggleError.message : "No fue posible actualizar el monitor");
-    }
-  }
-
-  async function removeMonitor(monitor: Monitor) {
-    if (!window.confirm(`¿Eliminar ${monitor.name} y todo su historial?`)) return;
-    try {
-      await request<void>(`/api/monitors/${monitor.id}`, { method: "DELETE" });
-      setNotice(`${monitor.name} fue eliminado.`);
-      await refresh();
-    } catch (removeError) {
-      setNotice(removeError instanceof Error ? removeError.message : "No fue posible eliminar el monitor");
-    }
-  }
-
-  return (
-    <main className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-row"><span className="brand-mark" aria-hidden="true"><i /></span><span>PulseOps</span></div>
-        <nav aria-label="Navegación principal">
-          <p className="nav-label">Operación</p>
-          {["Resumen", "Monitores", "Incidentes"].map((item) => (
-            <button className={`nav-item ${activeView === item ? "active" : ""}`} key={item} onClick={() => setActiveView(item)}>
-              <span className={`nav-glyph ${item.toLowerCase()}`} aria-hidden="true" />
-              {item}
-              {item === "Incidentes" && overview && overview.openIncidents > 0 && <em>{overview.openIncidents}</em>}
-            </button>
-          ))}
-        </nav>
-        <div className="free-plan">
-          <span>Workspace real</span>
-          <strong>{monitors.length} de 10 monitores</strong>
-          <div><i style={{ width: `${Math.min(monitors.length * 10, 100)}%` }} /></div>
-          <small>{overview?.totalChecks || 0} comprobaciones almacenadas</small>
-        </div>
-        <div className="profile-card profile-static"><span className="avatar">PO</span><span><strong>PulseOps Cloud</strong><small>Render + Supabase</small></span></div>
-      </aside>
-
-      <section className="content">
-        <header className="topbar">
-          <div className="mobile-brand"><span className="brand-mark"><i /></span> PulseOps</div>
-          <div className="header-actions">
-            <span className={`connection-state ${error ? "offline" : ""}`}><i />{error ? "API sin conexión" : "API conectada"}</span>
-            <button className="primary-button" onClick={() => setShowAnalyzer(true)}><span>＋</span> Analizar URL</button>
-          </div>
-        </header>
-
-        <div className="page-wrap">
-          <div className="page-heading">
-            <div><span className="eyebrow">OBSERVABILIDAD HTTP REAL</span><h1>{activeView}</h1><p>Disponibilidad, latencia e incidentes calculados desde comprobaciones reales.</p></div>
-            <button className="refresh-button" onClick={() => void refresh()} disabled={loading}>{loading ? "Actualizando…" : "Actualizar"}</button>
-          </div>
-
-          {error && <section className="api-error" role="alert"><strong>No podemos leer la API</strong><p>{error}</p><button onClick={() => void refresh()}>Reintentar</button></section>}
-
-          {activeView === "Resumen" && (
-            <>
-              <section className="metrics" aria-label="Métricas reales">
-                <MetricCard label="Disponibilidad" value={overview?.availabilityPercent == null ? "Sin datos" : `${overview.availabilityPercent.toFixed(2)}%`} detail={overview ? `${overview.totalChecks} comprobaciones acumuladas` : "Esperando a la API"} tone="green" />
-                <MetricCard label="Latencia media" value={overview?.averageLatencyMs == null ? "Sin datos" : `${Math.round(overview.averageLatencyMs)} ms`} detail="Promedio de respuestas con latencia registrada" tone="blue" />
-                <MetricCard label="Incidentes abiertos" value={String(overview?.openIncidents ?? 0)} detail={overview?.openIncidents ? "Requieren revisión" : "No hay incidentes activos"} tone="amber" />
-              </section>
-
-              <section className="panel monitors-panel">
-                <div className="panel-heading"><div><h2>Monitores</h2><p>Último estado obtenido para cada URL</p></div><button className="secondary-button" onClick={() => setActiveView("Monitores")}>Ver todos →</button></div>
-                <MonitorTable monitors={monitors.slice(0, 5)} checksByMonitor={checksByMonitor} onCheck={runCheck} onToggle={toggleMonitor} onRemove={removeMonitor} />
-              </section>
-
-              <div className="bottom-grid">
-                <section className="panel incident-panel">
-                  <div className="panel-heading"><div><h2>Incidentes recientes</h2><p>Generados automáticamente después de fallos consecutivos</p></div></div>
-                  <IncidentSummary incidents={incidents.slice(0, 3)} />
-                </section>
-                <section className="panel activity-panel">
-                  <div className="panel-heading"><div><h2>Actividad reciente</h2><p>Respuestas observadas por el backend</p></div></div>
-                  <CheckActivity checks={checks.slice(0, 5)} />
-                </section>
-              </div>
-            </>
-          )}
-
-          {activeView === "Monitores" && (
-            <section className="panel standalone-panel">
-              <div className="panel-heading"><div><h2>Todos los monitores</h2><p>Analiza, pausa o elimina endpoints persistidos en Supabase</p></div><button className="primary-button compact" onClick={() => setShowAnalyzer(true)}>＋ Analizar URL</button></div>
-              <MonitorTable monitors={monitors} checksByMonitor={checksByMonitor} onCheck={runCheck} onToggle={toggleMonitor} onRemove={removeMonitor} />
-            </section>
-          )}
-
-          {activeView === "Incidentes" && (
-            <section className="panel standalone-panel incident-list">
-              <div className="panel-heading"><div><h2>Incidentes registrados</h2><p>Solo aparecen cuando las comprobaciones reales alcanzan el umbral de fallos</p></div><span className="severity">{overview?.openIncidents || 0} ABIERTOS</span></div>
-              <IncidentTimeline incidents={incidents} />
-            </section>
-          )}
-        </div>
-      </section>
-
-      {notice && <button className="toast" onClick={() => setNotice("")} aria-live="polite">{notice}<span>×</span></button>}
-
-      {showAnalyzer && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => !analyzing && setShowAnalyzer(false)}>
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="analyzer-title" onMouseDown={(event) => event.stopPropagation()}>
-            <button className="modal-close" onClick={() => setShowAnalyzer(false)} disabled={analyzing} aria-label="Cerrar">×</button>
-            <span className="eyebrow">ANÁLISIS EN TIEMPO REAL</span>
-            <h2 id="analyzer-title">¿Qué URL quieres comprobar?</h2>
-            <p>El backend realizará una solicitud HTTP ahora, medirá su latencia y conservará el resultado para calcular disponibilidad e incidentes.</p>
-            <form onSubmit={analyze}>
-              <label>URL pública<input name="url" type="url" placeholder="https://ejemplo.com/health" required autoFocus disabled={analyzing} /></label>
-              <label>Nombre opcional<input name="name" placeholder="Ej. API de pagos" disabled={analyzing} /></label>
-              <label>Umbral de latencia<select name="latency" defaultValue="750" disabled={analyzing}><option value="300">300 ms</option><option value="750">750 ms</option><option value="1500">1.500 ms</option><option value="3000">3.000 ms</option></select></label>
-              <div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setShowAnalyzer(false)} disabled={analyzing}>Cancelar</button><button className="primary-button" type="submit" disabled={analyzing}>{analyzing ? "Analizando…" : "Analizar y guardar"}</button></div>
-            </form>
-          </section>
-        </div>
-      )}
-    </main>
-  );
+  return <main className="app">
+    <aside><button className="brand" onClick={()=>setView("Auditorías")}><Logo/><span>PulseOps<small>WEB INTELLIGENCE</small></span></button><nav><p>ANÁLISIS</p><Nav active={view==="Auditorías"} icon="◎" label="Auditorías" onClick={()=>setView("Auditorías")}/><p>OPERACIÓN</p><Nav active={view==="Monitoreo"} icon="⌁" label="Monitoreo" badge={monitors.length} onClick={()=>setView("Monitoreo")}/><Nav active={view==="Incidentes"} icon="!" label="Incidentes" badge={overview?.openIncidents||0} onClick={()=>setView("Incidentes")}/></nav><div className="free"><b>100% gratuito</b><strong>Auditor web real</strong><span>Sin resultados inventados ni servicios de pago.</span></div><small className="stack">● Render + FastAPI + Supabase</small></aside>
+    <section className="workspace"><header><button className="mobile-brand"><Logo/>PulseOps</button><span className={`api-state ${error?"bad":""}`}>● {error?"Revisa la conexión":"Sistema conectado"}</span><a href={`${API}/docs`} target="_blank">API Docs ↗</a></header>
+      {view==="Auditorías"&&<AuditPage audits={audits} selected={selected} loading={loading} auditing={auditing} error={error} onAudit={audit} onSelect={setSelected} onDelete={deleteAudit}/>}
+      {view==="Monitoreo"&&<MonitorPage monitors={monitors} checks={checks} overview={overview} onCreate={()=>setMonitorModal(true)} onAction={monitorAction}/>}
+      {view==="Incidentes"&&<IncidentPage incidents={incidents}/>}
+    </section>
+    {notice&&<button className="toast" onClick={()=>setNotice("")}>{notice}<b>×</b></button>}
+    {monitorModal&&<Modal onClose={()=>setMonitorModal(false)}><span className="eyebrow">MONITOREO CONTINUO</span><h2>Crear monitor HTTP</h2><p>Comprueba disponibilidad y latencia periódicamente. Es independiente de la auditoría web.</p><form onSubmit={createMonitor}><label>URL pública<input name="url" placeholder="https://ejemplo.com" required autoFocus/></label><label>Nombre<input name="name" placeholder="Mi sitio" required/></label><div><button type="button" onClick={()=>setMonitorModal(false)}>Cancelar</button><button className="primary" disabled={auditing}>{auditing?"Comprobando…":"Crear y comprobar"}</button></div></form></Modal>}
+  </main>;
 }
 
-function MetricCard({ label, value, detail, tone }: { label: string; value: string; detail: string; tone: "green" | "blue" | "amber" }) {
-  return <article><div className="metric-head"><span>{label}</span><i className={`metric-icon ${tone}`}>{tone === "amber" ? "!" : "↗"}</i></div><strong className={value === "Sin datos" ? "empty-value" : ""}>{value}</strong><p>{detail}</p></article>;
+function Logo(){return <span className="logo"><i/><i/><i/></span>}
+function Nav({active,icon,label,badge,onClick}:{active:boolean;icon:string;label:string;badge?:number;onClick:()=>void}){return <button className={active?"active":""} onClick={onClick}><i>{icon}</i>{label}{badge? <em>{badge}</em>:null}</button>}
+
+function AuditPage({audits,selected,loading,auditing,error,onAudit,onSelect,onDelete}:{audits:Audit[];selected:Audit|null;loading:boolean;auditing:boolean;error:string;onAudit:(e:FormEvent<HTMLFormElement>)=>void;onSelect:(a:Audit)=>void;onDelete:(a:Audit)=>void}){
+  return <div className="page"><section className="hero"><div><span className="eyebrow">— AUDITORÍA WEB REAL</span><h1>Entiende qué está<br/>frenando tu sitio.</h1><p>Analizamos el HTML público y convertimos SEO, seguridad, accesibilidad y rendimiento en acciones concretas.</p></div><form onSubmit={onAudit}><label>Pega la dirección de tu página</label><div><b>⌕</b><input name="url" placeholder="tusitio.com" required disabled={auditing}/><button disabled={auditing}>{auditing?"Analizando…":"Analizar sitio →"}</button></div><small>Solo páginas públicas · Sin registro · Informe persistente</small></form></section>
+    {error&&<div className="error"><strong>No pudimos completar la solicitud</strong><p>{error}</p></div>}
+    {auditing&&<div className="progress"><i/><div><strong>Visitando y examinando el sitio…</strong><p>Revisamos HTML, metadatos, enlaces, imágenes, cabeceras, robots.txt y sitemap.xml.</p></div></div>}
+    {!auditing&&selected&&<AuditResult audit={selected} onDelete={()=>onDelete(selected)}/>}
+    {!auditing&&!selected&&!loading&&<div className="empty"><b>◎</b><h2>Tu primera auditoría empieza aquí</h2><p>Pega arriba una página real. Este espacio se llenará únicamente con resultados obtenidos desde ese sitio.</p><div><span>SEO técnico</span><span>Seguridad</span><span>Accesibilidad</span><span>Rendimiento</span></div></div>}
+    {audits.length>0&&<section className="history"><div><span className="eyebrow">HISTORIAL</span><h2>Auditorías recientes</h2></div><div className="history-grid">{audits.map(item=><button className={selected?.id===item.id?"active":""} key={item.id} onClick={()=>onSelect(item)}><b className={tone(item.overall_score)}>{item.overall_score}</b><span><strong>{item.hostname}</strong><small>{age(item.created_at)} · HTTP {item.status_code}</small></span><em>Ver →</em></button>)}</div></section>}
+  </div>
 }
 
-function MonitorTable({ monitors, checksByMonitor, onCheck, onToggle, onRemove }: { monitors: Monitor[]; checksByMonitor: Map<string, Check[]>; onCheck: (monitor: Monitor) => void; onToggle: (monitor: Monitor) => void; onRemove: (monitor: Monitor) => void }) {
-  return (
-    <div className="table-wrap"><table><thead><tr><th>Servicio</th><th>Estado</th><th>Disponibilidad</th><th>Latencia</th><th>Última revisión</th><th><span className="sr-only">Acciones</span></th></tr></thead>
-      <tbody>
-        {monitors.length === 0 && <tr><td colSpan={6}><div className="empty-state"><strong>Aún no hay URLs analizadas</strong><p>Usa “Analizar URL” para realizar la primera comprobación real.</p></div></td></tr>}
-        {monitors.map((monitor) => {
-          const monitorChecks = checksByMonitor.get(monitor.id) || [];
-          const healthy = monitorChecks.filter((check) => check.status === "operational" || check.status === "degraded").length;
-          const uptime = monitorChecks.length ? (healthy / monitorChecks.length) * 100 : null;
-          const history = [...monitorChecks].slice(0, 12).reverse();
-          return <tr key={monitor.id}>
-            <td><div className="service-cell"><span className={`service-badge ${monitor.status}`}>{monitor.name.slice(0, 1).toUpperCase()}</span><span><strong>{monitor.name}</strong><small>{monitor.url}</small></span></div></td>
-            <td><span className={`status ${monitor.status}`}><i />{statusCopy[monitor.status]}</span></td>
-            <td><div className="uptime-cell"><span>{uptime == null ? "—" : `${uptime.toFixed(1)}%`}</span><div>{history.length ? history.map((check) => <i className={check.status} key={check.id} title={checkMessage(check)} />) : <span className="no-history">Sin historial</span>}</div></div></td>
-            <td><span className={monitor.status === "degraded" ? "latency-high" : ""}>{monitor.last_latency_ms == null ? "—" : `${Math.round(monitor.last_latency_ms)} ms`}</span></td>
-            <td className="muted">{relativeTime(monitor.last_checked_at)}</td>
-            <td><div className="row-actions"><button onClick={() => onCheck(monitor)} disabled={!monitor.is_active}>Analizar</button><button onClick={() => onToggle(monitor)}>{monitor.is_active ? "Pausar" : "Activar"}</button><button className="danger-action" onClick={() => onRemove(monitor)}>Eliminar</button></div></td>
-          </tr>;
-        })}
-      </tbody>
-    </table></div>
-  );
-}
+function AuditResult({audit,onDelete}:{audit:Audit;onDelete:()=>void}){const r=audit.report;return <section className="result">
+  <div className="result-title"><div><span className="eyebrow">INFORME TÉCNICO</span><h2>{r.page.title||audit.hostname}</h2><a href={audit.final_url} target="_blank">{audit.final_url} ↗</a><p>Analizado {new Date(audit.created_at).toLocaleString("es-CL")}</p></div><button onClick={onDelete}>Eliminar</button></div>
+  <div className="scores"><div className={`overall ${tone(audit.overall_score)}`} style={{"--score":`${audit.overall_score*3.6}deg`} as never}><b>{audit.overall_score}<small>/100</small></b><span>Puntaje general</span></div><div className="score-list"><Score name="Rendimiento" value={audit.performance_score}/><Score name="SEO" value={audit.seo_score}/><Score name="Accesibilidad" value={audit.accessibility_score}/><Score name="Seguridad" value={audit.security_score}/></div></div>
+  <div className="facts"><Fact name="Respuesta HTTP" value={String(audit.status_code)} detail={audit.status_code<400?"Página accesible":"Requiere atención"}/><Fact name="Tiempo del servidor" value={`${Math.round(audit.latency_ms)} ms`} detail={audit.latency_ms<=800?"Respuesta rápida":"Puede mejorar"}/><Fact name="Peso del HTML" value={bytes(audit.size_bytes)} detail={r.http.compressed?"Con compresión":"Sin compresión detectada"}/><Fact name="Redirecciones" value={String(r.http.redirects.length)} detail={r.http.redirects.length<=1?"Ruta directa":"Cadena mejorable"}/></div>
+  <div className="report-grid"><Card number="01" title="Qué mejorar primero" subtitle="Ordenado por impacto"><div className="recommendations">{r.recommendations.length?r.recommendations.map((item,index)=><article key={index}><b className={item.severity}>{item.severity}</b><div><small>{item.category}</small><h4>{item.title}</h4><p>{item.detail}</p></div></article>):<div className="all-good">✓ No detectamos mejoras urgentes.</div>}</div></Card>
+  <Card number="02" title="SEO y contenido" subtitle="Señales para buscadores"><dl><Detail name="Título" value={r.page.title||"No encontrado"} ok={!!r.page.title}/><Detail name="Descripción" value={r.page.description||"No encontrada"} ok={!!r.page.description}/><Detail name="H1 principal" value={`${r.page.h1Count} detectado(s)`} ok={r.page.h1Count===1}/><Detail name="Idioma" value={r.page.language||"No declarado"} ok={!!r.page.language}/><Detail name="URL canónica" value={r.page.canonical||"No declarada"} ok={!!r.page.canonical}/><Detail name="robots.txt" value={r.seo.robotsTxt?"Disponible":"No encontrado"} ok={r.seo.robotsTxt}/><Detail name="sitemap.xml" value={r.seo.sitemapXml?"Disponible":"No encontrado"} ok={r.seo.sitemapXml}/></dl></Card>
+  <Card number="03" title="Seguridad HTTP" subtitle="Protecciones del servidor"><div className="security"><b className={r.security.https?"ok":"bad"}>{r.security.https?"✓ HTTPS activo":"× Sin HTTPS"}</b><p>{r.security.presentHeaders.length} de {r.security.presentHeaders.length+r.security.missingHeaders.length} cabeceras recomendadas presentes</p><strong>Presentes</strong><div>{r.security.presentHeaders.map(x=><span className="ok" key={x}>✓ {x}</span>)}</div><strong>Ausentes</strong><div>{r.security.missingHeaders.map(x=><span key={x}>– {x}</span>)}</div></div></Card>
+  <Card number="04" title="Estructura y tecnología" subtitle="Señales del HTML público"><div className="structure"><div><b>{r.content.images}</b><span>Imágenes</span><small>{r.content.imagesWithAlt} con texto alternativo</small></div><div><b>{r.content.internalLinks}</b><span>Enlaces internos</span><small>{r.content.externalLinks} externos</small></div><strong>Tecnologías detectadas</strong><p>{r.technologies.length?r.technologies.map(x=><em key={x}>{x}</em>):"Sin firmas concluyentes"}</p></div></Card></div><p className="scope">ⓘ {r.scope}</p>
+  </section>}
+function Score({name,value}:{name:string;value:number}){return <article><span>{name}</span><b>{value}<small>/100</small></b><div><i className={tone(value)} style={{width:`${value}%`}}/></div></article>}
+function Fact({name,value,detail}:{name:string;value:string;detail:string}){return <article><small>{name}</small><b>{value}</b><span>{detail}</span></article>}
+function Card({number,title,subtitle,children}:{number:string;title:string;subtitle:string;children:ReactNode}){return <section className="card"><header><b>{number}</b><div><h3>{title}</h3><p>{subtitle}</p></div></header>{children}</section>}
+function Detail({name,value,ok}:{name:string;value:string;ok:boolean}){return <div><dt>{name}</dt><dd title={value}><b className={ok?"ok":"bad"}>{ok?"✓":"!"}</b>{value}</dd></div>}
 
-function IncidentSummary({ incidents }: { incidents: Incident[] }) {
-  if (!incidents.length) return <div className="empty-state roomy"><strong>Sin incidentes registrados</strong><p>PulseOps creará uno cuando una URL acumule los fallos configurados.</p></div>;
-  return <div className="incident-cards">{incidents.map((incident) => <article key={incident.id}><span className={`incident-dot ${incident.status}`} /><div><strong>{incident.title}</strong><p>{incident.monitor_name} · {incident.cause || "Sin causa informada"}</p></div><small>{incident.status === "open" ? durationSince(incident.started_at) : "Resuelto"}</small></article>)}</div>;
-}
+function MonitorPage({monitors,checks,overview,onCreate,onAction}:{monitors:Monitor[];checks:Check[];overview:Overview|null;onCreate:()=>void;onAction:(m:Monitor,a:"check"|"toggle"|"delete")=>void}){return <div className="page operations"><div className="operation-title"><div><span className="eyebrow">OPERACIÓN CONTINUA</span><h1>Monitoreo HTTP</h1><p>Comprueba periódicamente que tus sitios y APIs sigan respondiendo.</p></div><button onClick={onCreate}>＋ Crear monitor</button></div><div className="facts metrics"><Fact name="Disponibilidad" value={overview?.availabilityPercent==null?"Sin datos":`${overview.availabilityPercent.toFixed(1)}%`} detail={`${overview?.totalChecks||0} comprobaciones`}/><Fact name="Latencia media" value={overview?.averageLatencyMs==null?"Sin datos":`${Math.round(overview.averageLatencyMs)} ms`} detail="Respuestas registradas"/><Fact name="Monitores activos" value={String(overview?.activeMonitors||0)} detail={`${monitors.length} configurados`}/><Fact name="Incidentes abiertos" value={String(overview?.openIncidents||0)} detail="Fallos consecutivos"/></div><section className="data"><header><h2>Servicios observados</h2><span>{monitors.length}/10 gratuitos</span></header><div className="table"><table><thead><tr><th>Servicio</th><th>Estado</th><th>Disponibilidad reciente</th><th>Latencia</th><th>Última revisión</th><th/></tr></thead><tbody>{!monitors.length&&<tr><td colSpan={6}><div className="table-empty"><b>No hay monitores todavía</b><p>La auditoría examina una web una vez; un monitor vigila su disponibilidad.</p><button onClick={onCreate}>Crear el primero</button></div></td></tr>}{monitors.map(m=>{const own=checks.filter(c=>c.monitor_id===m.id);const healthy=own.filter(c=>c.status==="operational"||c.status==="degraded").length;return <tr key={m.id}><td><div className="service"><b>{m.name[0]}</b><span><strong>{m.name}</strong><small>{m.url}</small></span></div></td><td><span className={`status ${m.status}`}>● {statuses[m.status]}</span></td><td>{own.length?`${(healthy/own.length*100).toFixed(1)}%`:"—"}</td><td>{m.last_latency_ms?`${Math.round(m.last_latency_ms)} ms`:"—"}</td><td>{age(m.last_checked_at)}</td><td><div className="actions"><button disabled={!m.is_active} onClick={()=>onAction(m,"check")}>Revisar</button><button onClick={()=>onAction(m,"toggle")}>{m.is_active?"Pausar":"Activar"}</button><button onClick={()=>onAction(m,"delete")}>Eliminar</button></div></td></tr>})}</tbody></table></div></section></div>}
 
-function CheckActivity({ checks }: { checks: Check[] }) {
-  if (!checks.length) return <div className="empty-state roomy"><strong>Sin actividad todavía</strong><p>Las comprobaciones aparecerán aquí con su respuesta HTTP real.</p></div>;
-  return <ul>{checks.map((check) => <li key={check.id}><span className={`activity-icon ${check.status}`}>{check.status === "operational" ? "✓" : check.status === "degraded" ? "!" : "×"}</span><div><strong>{check.monitor_name}</strong><p>{checkMessage(check)}</p></div><time>{relativeTime(check.checked_at)}</time></li>)}</ul>;
-}
-
-function IncidentTimeline({ incidents }: { incidents: Incident[] }) {
-  if (!incidents.length) return <div className="empty-state page-empty"><strong>No existen incidentes</strong><p>Esto no es un ejemplo: la lista permanecerá vacía hasta que una URL falle repetidamente.</p></div>;
-  return <div className="timeline">{incidents.map((incident) => <article key={incident.id}><i className={incident.status === "open" ? "now" : "resolved"} /><time>{new Date(incident.started_at).toLocaleString("es-CL")}</time><div><strong>{incident.title}</strong><p>{incident.monitor_name} · {incident.cause || "Sin causa informada"}</p>{incident.resolved_at && <small>Resuelto {relativeTime(incident.resolved_at)}</small>}</div></article>)}</div>;
-}
+function IncidentPage({incidents}:{incidents:Incident[]}){return <div className="page operations"><div className="operation-title"><div><span className="eyebrow">HISTORIAL OPERATIVO</span><h1>Incidentes</h1><p>Fallos reales detectados por los monitores.</p></div></div><section className="data"><header><h2>Registro</h2><span>{incidents.filter(i=>i.status==="open").length} abiertos</span></header>{!incidents.length?<div className="incident-empty"><b>✓</b><h3>No hay incidentes registrados</h3><p>Esta lista seguirá vacía hasta que un monitor acumule fallos reales.</p></div>:<div className="timeline">{incidents.map(i=><article key={i.id}><time>{new Date(i.started_at).toLocaleString("es-CL")}</time><div><span className={i.status}>{i.status}</span><h3>{i.title}</h3><p>{i.monitor_name} · {i.cause||"Sin causa informada"}</p>{i.resolved_at&&<small>Recuperado {age(i.resolved_at)}</small>}</div></article>)}</div>}</section></div>}
+function Modal({children,onClose}:{children:ReactNode;onClose:()=>void}){return <div className="modal-bg" onMouseDown={onClose}><section className="modal" onMouseDown={e=>e.stopPropagation()}><button className="close" onClick={onClose}>×</button>{children}</section></div>}

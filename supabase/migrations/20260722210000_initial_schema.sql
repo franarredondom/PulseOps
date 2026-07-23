@@ -41,13 +41,35 @@ create table if not exists public.incidents (
 create index if not exists ix_incidents_monitor_status
   on public.incidents (monitor_id, status);
 
+create table if not exists public.website_audits (
+  id varchar(36) primary key,
+  url text not null,
+  final_url text not null,
+  hostname varchar(255) not null,
+  status_code integer not null,
+  latency_ms double precision not null,
+  size_bytes integer not null,
+  overall_score integer not null check (overall_score between 0 and 100),
+  performance_score integer not null check (performance_score between 0 and 100),
+  seo_score integer not null check (seo_score between 0 and 100),
+  accessibility_score integer not null check (accessibility_score between 0 and 100),
+  security_score integer not null check (security_score between 0 and 100),
+  report jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists ix_website_audits_created
+  on public.website_audits (created_at desc);
+
 comment on table public.monitors is 'HTTP endpoints managed by PulseOps.';
 comment on table public.check_results is 'Immutable history of uptime probes.';
 comment on table public.incidents is 'Incidents opened and resolved by the failure engine.';
+comment on table public.website_audits is 'Persisted technical audits of public websites.';
 
 alter table public.monitors enable row level security;
 alter table public.check_results enable row level security;
 alter table public.incidents enable row level security;
+alter table public.website_audits enable row level security;
 
 -- The FastAPI service connects with a PostgreSQL connection string and does not
 -- expose these tables through Supabase Data API. No anonymous RLS policies are

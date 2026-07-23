@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -75,3 +75,23 @@ class Incident(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     monitor: Mapped[Monitor] = relationship(back_populates="incidents")
+
+
+class WebsiteAudit(Base):
+    __tablename__ = "website_audits"
+    __table_args__ = (Index("ix_website_audits_created", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    url: Mapped[str] = mapped_column(Text)
+    final_url: Mapped[str] = mapped_column(Text)
+    hostname: Mapped[str] = mapped_column(String(255))
+    status_code: Mapped[int] = mapped_column(Integer)
+    latency_ms: Mapped[float] = mapped_column(Float)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    overall_score: Mapped[int] = mapped_column(Integer)
+    performance_score: Mapped[int] = mapped_column(Integer)
+    seo_score: Mapped[int] = mapped_column(Integer)
+    accessibility_score: Mapped[int] = mapped_column(Integer)
+    security_score: Mapped[int] = mapped_column(Integer)
+    report: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

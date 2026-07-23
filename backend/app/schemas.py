@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
@@ -85,3 +87,26 @@ class AnalysisRead(BaseModel):
 class RecentCheckRead(CheckRead):
     monitor_name: str
     monitor_url: str
+
+
+class WebsiteAuditRequest(BaseModel):
+    url: HttpUrl
+
+
+class WebsiteAuditRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    url: str
+    final_url: str
+    hostname: str
+    status_code: int
+    latency_ms: float
+    size_bytes: int
+    overall_score: int
+    performance_score: int
+    seo_score: int
+    accessibility_score: int
+    security_score: int
+    report: dict[str, Any]
+    created_at: datetime

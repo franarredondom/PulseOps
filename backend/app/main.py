@@ -8,10 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from .auditor import AuditError, audit_website
 from .checker import check_many, check_one, persist_result
 from .config import get_settings
 from .database import Base, engine, get_session
-from .models import CheckResult, Incident, IncidentStatus, Monitor, ServiceStatus, utc_now
+from .models import CheckResult, Incident, IncidentStatus, Monitor, ServiceStatus, WebsiteAudit, utc_now
 from .schemas import (
     AnalysisRead,
     AnalyzeRequest,
@@ -22,6 +23,8 @@ from .schemas import (
     MonitorUpdate,
     RecentCheckRead,
     RunSummary,
+    WebsiteAuditRead,
+    WebsiteAuditRequest,
 )
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -33,15 +36,15 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(engine)
     if engine.dialect.name == "postgresql":
         with engine.begin() as connection:
-            for table in ("monitors", "check_results", "incidents"):
+            for table in ("monitors", "check_results", "incidents", "website_audits"):
                 connection.execute(text(f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY"))
     yield
 
 
 app = FastAPI(
     title="PulseOps API",
-    description="API de monitoreo HTTP, comprobaciones concurrentes e incidentes automáticos.",
-    version="0.1.0",
+    description="Auditoría técnica de sitios web y monitoreo HTTP con datos reales.",
+    version="1.0.0",
     lifespan=lifespan,
 )
 settings = get_settings()
@@ -58,6 +61,60 @@ app.add_middleware(
 def health(session: SessionDep) -> dict[str, str]:
     session.execute(select(1))
     return {"status": "ok", "database": "connected"}
+
+
+@app.post("/api/audits", response_model=WebsiteAuditRead, status_code=status.HTTP_201_CREATED, tags=["audits"])
+async def create_website_audit(payload: WebsiteAuditRequest, session: SessionDep) -> WebsiteAudit:
+    raw_url = str(payload.url)
+    try:
+        report = await audit_website(raw_url)
+    except AuditError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    http = report["http"]
+    scores = report["scores"]
+    audit = WebsiteAudit(
+        url=raw_url,
+        final_url=http["finalUrl"],
+        hostname=urlparse(http["finalUrl"]).hostname or "unknown",
+        status_code=http["statusCode"],
+        latency_ms=http["latencyMs"],
+        size_bytes=http["sizeBytes"],
+        overall_score=scores["overall"],
+        performance_score=scores["performance"],
+        seo_score=scores["seo"],
+        accessibility_score=scores["accessibility"],
+        security_score=scores["security"],
+        report=report,
+    )
+    session.add(audit)
+    session.commit()
+    session.refresh(audit)
+    return audit
+
+
+@app.get("/api/audits", response_model=list[WebsiteAuditRead], tags=["audits"])
+def list_website_audits(session: SessionDep, limit: int = 20) -> list[WebsiteAudit]:
+    safe_limit = min(max(limit, 1), 100)
+    return list(session.scalars(select(WebsiteAudit).order_by(WebsiteAudit.created_at.desc()).limit(safe_limit)))
+
+
+@app.get("/api/audits/{audit_id}", response_model=WebsiteAuditRead, tags=["audits"])
+def get_website_audit(audit_id: str, session: SessionDep) -> WebsiteAudit:
+    audit = session.get(WebsiteAudit, audit_id)
+    if audit is None:
+        raise HTTPException(status_code=404, detail="Audit not found")
+    return audit
+
+
+@app.delete("/api/audits/{audit_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["audits"])
+def delete_website_audit(audit_id: str, session: SessionDep) -> Response:
+    audit = session.get(WebsiteAudit, audit_id)
+    if audit is None:
+        raise HTTPException(status_code=404, detail="Audit not found")
+    session.delete(audit)
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/api/monitors", response_model=list[MonitorRead], tags=["monitors"])
