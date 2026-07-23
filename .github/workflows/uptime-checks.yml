@@ -5,16 +5,29 @@ on:
     - cron: "*/10 * * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      - name: Request GitHub identity token
+        id: oidc
+        shell: bash
+        run: |
+          token_response="$(curl --fail --silent --show-error \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=pulseops-api")"
+          token="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$token_response")"
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
       - name: Wake API and run due monitors
         env:
-          API_URL: ${{ secrets.PULSEOPS_API_URL }}
-          CRON_SECRET: ${{ secrets.PULSEOPS_CRON_SECRET }}
+          OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
         run: |
-          test -n "$API_URL"
-          curl --fail --retry 3 --retry-delay 15 \
-            -X POST "$API_URL/api/checks/run" \
-            -H "X-Cron-Secret: $CRON_SECRET"
+          curl --fail --show-error --retry 3 --retry-delay 15 \
+            -X POST "https://pulseops-api-qlqu.onrender.com/api/checks/run" \
+            -H "Authorization: Bearer $OIDC_TOKEN"

@@ -6,7 +6,6 @@ import pytest
 
 TEST_DATABASE = Path(__file__).with_name("pulseops-test.db")
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DATABASE.as_posix()}"
-os.environ["CRON_SECRET"] = "test-secret"
 os.environ["SUPABASE_PUBLISHABLE_KEY"] = "sb_publishable_test"
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -57,9 +56,38 @@ def test_monitor_lifecycle() -> None:
         assert deleted.status_code == 204
 
 
-def test_scheduler_requires_secret() -> None:
+def test_scheduler_requires_github_identity() -> None:
     with TestClient(app) as client:
         assert client.post("/api/checks/run").status_code == 401
+
+
+def test_scheduler_accepts_verified_github_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.main.verify_github_actions_token",
+        lambda _: {"repository": "franarredondom/PulseOps"},
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/checks/run",
+            headers={"Authorization": "Bearer github-oidc-token"},
+        )
+        assert response.status_code == 200
+        assert response.json()["checked"] == 0
+
+
+def test_scheduler_rejects_invalid_github_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.github_oidc import GitHubOIDCError
+
+    def reject(_: str) -> None:
+        raise GitHubOIDCError("invalid")
+
+    monkeypatch.setattr("app.main.verify_github_actions_token", reject)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/checks/run",
+            headers={"Authorization": "Bearer forged-token"},
+        )
+        assert response.status_code == 401
 
 
 def test_real_data_endpoints_start_empty() -> None:

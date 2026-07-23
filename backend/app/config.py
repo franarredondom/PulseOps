@@ -7,7 +7,6 @@ import os
 class Settings:
     database_url: str
     cors_origins: tuple[str, ...]
-    cron_secret: str
     failure_threshold: int
     supabase_url: str
     supabase_publishable_key: str
@@ -29,7 +28,6 @@ def get_settings() -> Settings:
     return Settings(
         database_url=database_url,
         cors_origins=origins,
-        cron_secret=os.getenv("CRON_SECRET", "local-development-secret"),
         failure_threshold=max(1, int(os.getenv("FAILURE_THRESHOLD", "3"))),
         supabase_url=os.getenv("SUPABASE_URL", "https://kpfqzyejzcirlavewmqi.supabase.co").rstrip("/"),
         supabase_publishable_key=os.getenv(

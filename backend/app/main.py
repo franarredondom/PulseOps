@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Annotated
@@ -13,6 +14,7 @@ from .auth import AuthUser, get_current_user
 from .checker import check_many, check_one, persist_result
 from .config import get_settings
 from .database import Base, engine, get_session
+from .github_oidc import GitHubOIDCError, verify_github_actions_token
 from .models import CheckResult, Incident, IncidentStatus, Monitor, ServiceStatus, WebsiteAudit, utc_now
 from .schemas import (
     AnalysisRead,
@@ -63,7 +65,7 @@ app.add_middleware(
     allow_origins=list(settings.cors_origins),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-Cron-Secret"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -218,10 +220,15 @@ async def run_single_check(monitor_id: str, session: SessionDep, user: CurrentUs
 @app.post("/api/checks/run", response_model=RunSummary, tags=["checks"])
 async def run_due_checks(
     session: SessionDep,
-    x_cron_secret: Annotated[str | None, Header()] = None,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> RunSummary:
-    if x_cron_secret != settings.cron_secret:
-        raise HTTPException(status_code=401, detail="Invalid scheduler secret")
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="GitHub Actions identity required")
+    try:
+        await asyncio.to_thread(verify_github_actions_token, token)
+    except GitHubOIDCError as error:
+        raise HTTPException(status_code=401, detail="Invalid GitHub Actions identity") from error
 
     now = utc_now()
     active = list(session.scalars(select(Monitor).where(Monitor.is_active.is_(True))))

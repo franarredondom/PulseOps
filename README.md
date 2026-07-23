@@ -141,7 +141,6 @@ La API estará disponible en `http://localhost:8000` y OpenAPI en `http://localh
 | `CORS_ORIGINS` | Orígenes autorizados, separados por comas |
 | `SUPABASE_URL` | URL utilizada para validar las sesiones |
 | `SUPABASE_PUBLISHABLE_KEY` | Clave pública para consultar Supabase Auth |
-| `CRON_SECRET` | Secreto del scheduler de monitores |
 | `FAILURE_THRESHOLD` | Fallos consecutivos necesarios para abrir un incidente |
 
 La clave publicable de Supabase puede utilizarse en el navegador. La contraseña de PostgreSQL y cualquier clave `service_role` deben mantenerse fuera del repositorio.
@@ -169,7 +168,7 @@ Estas direcciones permiten que la confirmación de correo y la recuperación de 
 
 `DATABASE_URL` se configura directamente en Render. El resto de los valores públicos de integración se declara en el Blueprint.
 
-Las comprobaciones programadas utilizan [`.github/workflows/uptime-checks.yml`](.github/workflows/uptime-checks.yml) y requieren los secretos `PULSEOPS_API_URL` y `PULSEOPS_CRON_SECRET` en GitHub Actions.
+Las comprobaciones programadas utilizan [`.github/workflows/uptime-checks.yml`](.github/workflows/uptime-checks.yml). GitHub Actions obtiene una identidad OIDC temporal en cada ejecución, por lo que no es necesario copiar secretos del scheduler entre GitHub y Render.
 
 ## API principal
 
@@ -187,7 +186,7 @@ Las rutas de producto requieren `Authorization: Bearer <access_token>`. `/health
 | `GET` | `/api/checks/recent` | Lista comprobaciones recientes |
 | `GET` | `/api/incidents` | Lista incidentes asociados a la cuenta |
 | `GET` | `/api/overview` | Calcula métricas del espacio personal |
-| `POST` | `/api/checks/run` | Ejecuta comprobaciones pendientes mediante secreto |
+| `POST` | `/api/checks/run` | Ejecuta comprobaciones pendientes con identidad de GitHub Actions |
 
 ## Seguridad
 
@@ -197,7 +196,7 @@ Las rutas de producto requieren `Authorization: Bearer <access_token>`. `/health
 - El auditor bloquea direcciones privadas, loopback, link-local y redes reservadas.
 - Cada redirección se valida nuevamente para reducir riesgos de SSRF.
 - El HTML descargado está limitado a 2 MB.
-- El scheduler exige `X-Cron-Secret`.
+- El scheduler valida el emisor, repositorio, workflow, evento y rama de cada token OIDC de GitHub Actions.
 - Los archivos `.env` y las credenciales de infraestructura no se versionan.
 
 ## Pruebas
