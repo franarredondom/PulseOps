@@ -6,6 +6,8 @@
 
 Analiza páginas reales, convierte señales técnicas en recomendaciones claras y monitorea su disponibilidad desde un espacio privado.
 
+**Diseñado y desarrollado por Francisca Arredondo M.**
+
 [**Abrir PulseOps →**](https://pulseops-dashboard.onrender.com/) · [Documentación de la API](https://pulseops-api-qlqu.onrender.com/docs)
 
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
@@ -214,6 +216,10 @@ pytest
 ```
 
 Las pruebas cubren el ciclo de monitores, persistencia de auditorías, protección de rutas, señales HTML, restricciones de red y separación de recursos entre usuarios.
+
+## Autoría
+
+PulseOps fue creado, diseñado y programado por **Francisca Arredondo M.**
 
 ---
 
