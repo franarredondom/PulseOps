@@ -7,18 +7,36 @@ import pytest
 TEST_DATABASE = Path(__file__).with_name("pulseops-test.db")
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DATABASE.as_posix()}"
 os.environ["CRON_SECRET"] = "test-secret"
+os.environ["SUPABASE_PUBLISHABLE_KEY"] = "sb_publishable_test"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
+from app.auth import AuthUser, get_current_user  # noqa: E402
 from app.checker import ProbeResult, ensure_public_target  # noqa: E402
 from app.auditor import FetchedPage, build_report, looks_like_html  # noqa: E402
 from app.models import ServiceStatus  # noqa: E402
 
 
+TEST_USER = AuthUser(id="11111111-1111-1111-1111-111111111111", email="test@example.com", name="Test User")
+app.dependency_overrides[get_current_user] = lambda: TEST_USER
+
+
+def test_private_routes_require_a_session() -> None:
+    override = app.dependency_overrides.pop(get_current_user)
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/account")
+            assert response.status_code == 401
+            assert response.json()["detail"] == "Inicia sesión para continuar"
+    finally:
+        app.dependency_overrides[get_current_user] = override
+
+
 def test_monitor_lifecycle() -> None:
     with TestClient(app) as client:
         assert client.get("/health").json()["status"] == "ok"
+        assert client.get("/api/account").json()["email"] == "test@example.com"
 
         created = client.post(
             "/api/monitors",
@@ -147,3 +165,20 @@ def test_audit_endpoint_persists_report(monkeypatch: pytest.MonkeyPatch) -> None
         assert client.get(f"/api/audits/{payload['id']}").status_code == 200
         assert any(item["id"] == payload["id"] for item in client.get("/api/audits").json())
         assert client.delete(f"/api/audits/{payload['id']}").status_code == 204
+
+
+def test_users_cannot_see_each_others_monitors() -> None:
+    with TestClient(app) as client:
+        created = client.post("/api/monitors", json={"name": "Private service", "url": "https://example.com/private"})
+        assert created.status_code == 201
+        monitor_id = created.json()["id"]
+
+        other_user = AuthUser(id="22222222-2222-2222-2222-222222222222", email="other@example.com", name="Other")
+        app.dependency_overrides[get_current_user] = lambda: other_user
+        try:
+            assert client.get("/api/monitors").json() == []
+            assert client.delete(f"/api/monitors/{monitor_id}").status_code == 404
+        finally:
+            app.dependency_overrides[get_current_user] = lambda: TEST_USER
+
+        assert client.delete(f"/api/monitors/{monitor_id}").status_code == 204

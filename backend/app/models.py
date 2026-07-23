@@ -29,6 +29,7 @@ class Monitor(Base):
     __tablename__ = "monitors"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(120))
     url: Mapped[str] = mapped_column(Text)
     interval_minutes: Mapped[int] = mapped_column(Integer, default=5)
@@ -82,6 +83,7 @@ class WebsiteAudit(Base):
     __table_args__ = (Index("ix_website_audits_created", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     url: Mapped[str] = mapped_column(Text)
     final_url: Mapped[str] = mapped_column(Text)
     hostname: Mapped[str] = mapped_column(String(255))

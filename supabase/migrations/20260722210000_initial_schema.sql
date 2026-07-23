@@ -1,5 +1,6 @@
 create table if not exists public.monitors (
   id varchar(36) primary key,
+  owner_id varchar(36),
   name varchar(120) not null,
   url text not null,
   interval_minutes integer not null default 5 check (interval_minutes between 1 and 1440),
@@ -43,6 +44,7 @@ create index if not exists ix_incidents_monitor_status
 
 create table if not exists public.website_audits (
   id varchar(36) primary key,
+  owner_id varchar(36),
   url text not null,
   final_url text not null,
   hostname varchar(255) not null,
@@ -60,6 +62,9 @@ create table if not exists public.website_audits (
 
 create index if not exists ix_website_audits_created
   on public.website_audits (created_at desc);
+
+create index if not exists ix_monitors_owner_id on public.monitors (owner_id);
+create index if not exists ix_website_audits_owner_id on public.website_audits (owner_id);
 
 comment on table public.monitors is 'HTTP endpoints managed by PulseOps.';
 comment on table public.check_results is 'Immutable history of uptime probes.';

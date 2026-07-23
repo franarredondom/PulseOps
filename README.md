@@ -1,60 +1,58 @@
 # PulseOps
 
-PulseOps es un auditor web y plataforma de observabilidad HTTP. Recibe una página pública, examina su HTML y respuesta real, puntúa SEO, seguridad, accesibilidad y rendimiento, detecta tecnologías y entrega mejoras concretas. El monitoreo continuo conserva además disponibilidad, latencia e incidentes en PostgreSQL.
+PulseOps es una plataforma de inteligencia y observabilidad web. Analiza páginas públicas, transforma señales técnicas en recomendaciones priorizadas y mantiene un historial privado por cuenta. También permite monitorear disponibilidad, latencia e incidentes de sitios y APIs.
+
+[Aplicación](https://pulseops-dashboard.onrender.com/) · [API](https://pulseops-api-qlqu.onrender.com/docs)
 
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.116-009688?logo=fastapi&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-20232A?logo=react&logoColor=61DAFB)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Supabase-4169E1?logo=postgresql&logoColor=white)
-![Cost](https://img.shields.io/badge/monthly_cost-$0-16885B)
 
-## Funcionalidades
+## Producto
 
-- Auditoría técnica real de páginas HTML públicas, sin datos ficticios.
+### Auditoría web
+
 - Puntajes de rendimiento HTTP, SEO, accesibilidad básica y seguridad.
 - Revisión de títulos, descripciones, H1, canonical, idioma, imágenes, enlaces y Open Graph.
-- Comprobación de robots.txt, sitemap.xml, HTTPS, compresión y cabeceras de seguridad.
-- Detección no invasiva de tecnologías visibles y recomendaciones ordenadas por impacto.
-- Historial persistente de informes y eliminación individual.
-- Monitoreo inmediato de cualquier URL HTTP/HTTPS pública.
-- Estado operativo, degradado o caído basado en respuesta y latencia reales.
-- Historial de comprobaciones y disponibilidad calculada desde PostgreSQL.
-- Creación y resolución automática de incidentes después de fallos consecutivos.
-- Pausa, reactivación, eliminación y nueva comprobación de monitores.
-- Protección contra objetivos de red privados o reservados.
-- Scheduler protegido mediante secreto y ejecutado con GitHub Actions.
-- Dashboard público responsive sin datos ficticios ni modo de demostración.
+- Comprobación de `robots.txt`, `sitemap.xml`, HTTPS, compresión y cabeceras de seguridad.
+- Detección no invasiva de tecnologías visibles.
+- Recomendaciones ordenadas por impacto e historial persistente de informes.
+
+### Observabilidad
+
+- Monitores HTTP configurables para sitios y APIs.
+- Historial de disponibilidad, estado y latencia.
+- Creación y resolución automática de incidentes.
+- Ejecución programada mediante un scheduler protegido.
+
+### Identidad y privacidad
+
+- Registro e inicio de sesión mediante Supabase Auth.
+- Confirmación de correo y recuperación de contraseña.
+- Renovación y persistencia automática de sesiones.
+- Auditorías, monitores, comprobaciones e incidentes aislados por usuario.
+- Gestión de perfil, cambio de contraseña y cierre de sesión.
 
 ## Arquitectura
 
 ```text
-React + Vite ───────► FastAPI ─────────► PostgreSQL / Supabase
+                         ┌── Supabase Auth
+React + Vite ── JWT ───► FastAPI ─────────► PostgreSQL / Supabase
                             │
                             ├── auditor de HTML, SEO y accesibilidad
                             ├── análisis HTTP y cabeceras de seguridad
                             ├── comprobaciones concurrentes de monitores
                             └── motor automático de incidentes
 
-GitHub Actions ─────► POST /api/checks/run cada 10 minutos
+GitHub Actions ─────────► scheduler de comprobaciones
 ```
 
-## Ejecución local
+FastAPI valida el token de Supabase antes de acceder a los recursos. El identificador autenticado se aplica en todas las consultas para mantener separados los espacios de trabajo.
 
-### Docker
+## Desarrollo local
 
-```bash
-docker compose up --build
-```
-
-Dashboard: `http://localhost:5173`
-
-API: `http://localhost:8000`
-
-Swagger: `http://localhost:8000/docs`
-
-### Sin Docker
-
-Frontend:
+### Frontend
 
 ```bash
 cp .env.example .env.local
@@ -62,7 +60,7 @@ npm install
 npm run dev
 ```
 
-Backend:
+### Backend
 
 ```bash
 cd backend
@@ -73,56 +71,71 @@ cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
-## Variables de entorno
+Dashboard: `http://localhost:5173`
+
+API: `http://localhost:8000`
+
+OpenAPI: `http://localhost:8000/docs`
+
+## Configuración
 
 Frontend:
 
 | Variable | Uso |
 | --- | --- |
-| `VITE_API_URL` | URL pública de FastAPI |
+| `VITE_API_URL` | URL de FastAPI |
+| `VITE_SUPABASE_URL` | URL del proyecto Supabase |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Clave pública utilizada por Supabase Auth |
 
 Backend:
 
 | Variable | Uso |
 | --- | --- |
-| `DATABASE_URL` | SQLite local o conexión PostgreSQL de Supabase |
-| `CORS_ORIGINS` | Orígenes web autorizados, separados por comas |
-| `CRON_SECRET` | Protege la ejecución programada |
-| `FAILURE_THRESHOLD` | Fallos consecutivos para abrir un incidente |
+| `DATABASE_URL` | Conexión PostgreSQL o SQLite local |
+| `CORS_ORIGINS` | Orígenes web autorizados |
+| `SUPABASE_URL` | URL utilizada para validar sesiones |
+| `SUPABASE_PUBLISHABLE_KEY` | Clave pública para consultar Supabase Auth |
+| `CRON_SECRET` | Protege la ejecución del scheduler |
+| `FAILURE_THRESHOLD` | Fallos consecutivos necesarios para abrir un incidente |
 
-## Despliegue gratuito
+Para que las confirmaciones y recuperaciones regresen a la aplicación, configura en Supabase Auth:
 
-El Blueprint [`render.yaml`](render.yaml) define dos recursos:
+- **Site URL:** `https://pulseops-dashboard.onrender.com`
+- **Redirect URL:** `https://pulseops-dashboard.onrender.com/**`
 
-1. `pulseops-api`: Web Service Docker con FastAPI.
-2. `pulseops-dashboard`: Static Site con React/Vite.
+## Despliegue
 
-La base de datos usa el Session Pooler de Supabase. Render solicita `DATABASE_URL` al crear el Blueprint; nunca guardes esa cadena en GitHub.
+El Blueprint [`render.yaml`](render.yaml) define:
 
-Para activar las comprobaciones programadas, agrega en GitHub los secretos `PULSEOPS_API_URL` y `PULSEOPS_CRON_SECRET`. El workflow `uptime-checks.yml` ejecuta los monitores pendientes cada diez minutos.
+1. `pulseops-api`: servicio Docker con FastAPI.
+2. `pulseops-dashboard`: aplicación estática React/Vite.
 
-## API principal
+La base de datos utiliza PostgreSQL en Supabase. `DATABASE_URL` debe configurarse directamente en Render y nunca almacenarse en el repositorio.
+
+## API
+
+Salvo `/health` y el scheduler, las rutas requieren `Authorization: Bearer <access_token>`.
 
 | Método | Ruta | Descripción |
 | --- | --- | --- |
 | `GET` | `/health` | Salud de API y base de datos |
-| `POST` | `/api/audits` | Audita una página real y guarda el informe |
-| `GET` | `/api/audits` | Historial reciente de auditorías |
-| `GET/DELETE` | `/api/audits/{id}` | Consulta o elimina un informe |
-| `POST` | `/api/analyze` | Guarda un monitor y lo comprueba inmediatamente |
-| `GET/POST` | `/api/monitors` | Lista o crea monitores |
+| `GET` | `/api/account` | Identidad asociada a la sesión |
+| `POST/GET` | `/api/audits` | Crea o lista auditorías propias |
+| `GET/DELETE` | `/api/audits/{id}` | Consulta o elimina un informe propio |
+| `GET/POST` | `/api/monitors` | Lista o crea monitores propios |
 | `PATCH/DELETE` | `/api/monitors/{id}` | Actualiza o elimina un monitor |
 | `POST` | `/api/monitors/{id}/check` | Ejecuta una comprobación inmediata |
-| `GET` | `/api/checks/recent` | Historial reciente con datos del monitor |
-| `POST` | `/api/checks/run` | Ejecuta comprobaciones pendientes |
-| `GET` | `/api/incidents` | Incidentes reales abiertos y resueltos |
-| `GET` | `/api/overview` | Disponibilidad, latencia y conteos agregados |
+| `GET` | `/api/checks/recent` | Historial de comprobaciones del usuario |
+| `GET` | `/api/incidents` | Incidentes asociados a sus monitores |
+| `GET` | `/api/overview` | Métricas agregadas del espacio personal |
+| `POST` | `/api/checks/run` | Ejecuta comprobaciones pendientes mediante secreto |
 
 ## Seguridad
 
-- Los secretos y archivos `.env` están excluidos del repositorio.
+- Las contraseñas y los correos de autenticación son gestionados por Supabase Auth.
+- Los tokens se validan contra el servidor de autenticación antes de acceder a datos.
+- Todas las consultas interactivas se filtran por propietario.
+- Los archivos `.env` y secretos permanecen fuera del repositorio.
+- El auditor rechaza redes privadas, loopback, link-local y destinos reservados.
+- Cada redirección se vuelve a validar y el HTML descargado está limitado a 2 MB.
 - El scheduler exige `X-Cron-Secret`.
-- El checker rechaza IP privadas, loopback, link-local y redes reservadas.
-- El auditor vuelve a validar cada destino durante las redirecciones y limita el HTML a 2 MB.
-- La concurrencia está limitada a diez solicitudes.
-- La instancia pública es un workspace compartido. Para múltiples usuarios independientes, la siguiente evolución recomendada es autenticación y aislamiento por workspace.

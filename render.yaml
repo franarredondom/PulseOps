@@ -17,6 +17,10 @@ services:
         generateValue: true
       - key: FAILURE_THRESHOLD
         value: "3"
+      - key: SUPABASE_URL
+        value: https://kpfqzyejzcirlavewmqi.supabase.co
+      - key: SUPABASE_PUBLISHABLE_KEY
+        value: sb_publishable_JYksltCemRN_zuY8ASF1ug_i5p_wXPl
 
   - type: web
     name: pulseops-dashboard
@@ -24,6 +28,11 @@ services:
     buildCommand: npm ci && npm run build
     staticPublishPath: ./dist
     autoDeployTrigger: commit
+    envVars:
+      - key: VITE_SUPABASE_URL
+        value: https://kpfqzyejzcirlavewmqi.supabase.co
+      - key: VITE_SUPABASE_PUBLISHABLE_KEY
+        value: sb_publishable_JYksltCemRN_zuY8ASF1ug_i5p_wXPl
     routes:
       - type: rewrite
         source: /*

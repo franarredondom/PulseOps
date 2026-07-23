@@ -5,10 +5,11 @@ from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, select, text
+from sqlalchemy import func, inspect, select, text
 from sqlalchemy.orm import Session
 
 from .auditor import AuditError, audit_website
+from .auth import AuthUser, get_current_user
 from .checker import check_many, check_one, persist_result
 from .config import get_settings
 from .database import Base, engine, get_session
@@ -28,14 +29,23 @@ from .schemas import (
 )
 
 SessionDep = Annotated[Session, Depends(get_session)]
+CurrentUserDep = Annotated[AuthUser, Depends(get_current_user)]
 MAX_MONITORS = 10
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(engine)
-    if engine.dialect.name == "postgresql":
-        with engine.begin() as connection:
+    with engine.begin() as connection:
+        schema = "public." if engine.dialect.name == "postgresql" else ""
+        database_inspector = inspect(connection)
+        for table in ("monitors", "website_audits"):
+            columns = {column["name"] for column in database_inspector.get_columns(table)}
+            if "owner_id" not in columns:
+                connection.execute(text(f"ALTER TABLE {schema}{table} ADD COLUMN owner_id VARCHAR(36)"))
+            connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_owner_id ON {schema}{table} (owner_id)"))
+        connection.execute(text(f"UPDATE {schema}monitors SET is_active = false, status = 'paused' WHERE owner_id IS NULL AND is_active = true"))
+        if engine.dialect.name == "postgresql":
             for table in ("monitors", "check_results", "incidents", "website_audits"):
                 connection.execute(text(f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY"))
     yield
@@ -53,7 +63,7 @@ app.add_middleware(
     allow_origins=list(settings.cors_origins),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
-    allow_headers=["Content-Type", "X-Cron-Secret"],
+    allow_headers=["Authorization", "Content-Type", "X-Cron-Secret"],
 )
 
 
@@ -63,8 +73,13 @@ def health(session: SessionDep) -> dict[str, str]:
     return {"status": "ok", "database": "connected"}
 
 
+@app.get("/api/account", tags=["account"])
+def account(user: CurrentUserDep) -> dict[str, str]:
+    return {"id": user.id, "email": user.email, "name": user.name}
+
+
 @app.post("/api/audits", response_model=WebsiteAuditRead, status_code=status.HTTP_201_CREATED, tags=["audits"])
-async def create_website_audit(payload: WebsiteAuditRequest, session: SessionDep) -> WebsiteAudit:
+async def create_website_audit(payload: WebsiteAuditRequest, session: SessionDep, user: CurrentUserDep) -> WebsiteAudit:
     raw_url = str(payload.url)
     try:
         report = await audit_website(raw_url)
@@ -74,6 +89,7 @@ async def create_website_audit(payload: WebsiteAuditRequest, session: SessionDep
     http = report["http"]
     scores = report["scores"]
     audit = WebsiteAudit(
+        owner_id=user.id,
         url=raw_url,
         final_url=http["finalUrl"],
         hostname=urlparse(http["finalUrl"]).hostname or "unknown",
@@ -94,22 +110,22 @@ async def create_website_audit(payload: WebsiteAuditRequest, session: SessionDep
 
 
 @app.get("/api/audits", response_model=list[WebsiteAuditRead], tags=["audits"])
-def list_website_audits(session: SessionDep, limit: int = 20) -> list[WebsiteAudit]:
+def list_website_audits(session: SessionDep, user: CurrentUserDep, limit: int = 20) -> list[WebsiteAudit]:
     safe_limit = min(max(limit, 1), 100)
-    return list(session.scalars(select(WebsiteAudit).order_by(WebsiteAudit.created_at.desc()).limit(safe_limit)))
+    return list(session.scalars(select(WebsiteAudit).where(WebsiteAudit.owner_id == user.id).order_by(WebsiteAudit.created_at.desc()).limit(safe_limit)))
 
 
 @app.get("/api/audits/{audit_id}", response_model=WebsiteAuditRead, tags=["audits"])
-def get_website_audit(audit_id: str, session: SessionDep) -> WebsiteAudit:
-    audit = session.get(WebsiteAudit, audit_id)
+def get_website_audit(audit_id: str, session: SessionDep, user: CurrentUserDep) -> WebsiteAudit:
+    audit = session.scalar(select(WebsiteAudit).where(WebsiteAudit.id == audit_id, WebsiteAudit.owner_id == user.id))
     if audit is None:
         raise HTTPException(status_code=404, detail="Audit not found")
     return audit
 
 
 @app.delete("/api/audits/{audit_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["audits"])
-def delete_website_audit(audit_id: str, session: SessionDep) -> Response:
-    audit = session.get(WebsiteAudit, audit_id)
+def delete_website_audit(audit_id: str, session: SessionDep, user: CurrentUserDep) -> Response:
+    audit = session.scalar(select(WebsiteAudit).where(WebsiteAudit.id == audit_id, WebsiteAudit.owner_id == user.id))
     if audit is None:
         raise HTTPException(status_code=404, detail="Audit not found")
     session.delete(audit)
@@ -118,16 +134,16 @@ def delete_website_audit(audit_id: str, session: SessionDep) -> Response:
 
 
 @app.get("/api/monitors", response_model=list[MonitorRead], tags=["monitors"])
-def list_monitors(session: SessionDep) -> list[Monitor]:
-    return list(session.scalars(select(Monitor).order_by(Monitor.created_at.desc())))
+def list_monitors(session: SessionDep, user: CurrentUserDep) -> list[Monitor]:
+    return list(session.scalars(select(Monitor).where(Monitor.owner_id == user.id).order_by(Monitor.created_at.desc())))
 
 
 @app.post("/api/monitors", response_model=MonitorRead, status_code=status.HTTP_201_CREATED, tags=["monitors"])
-def create_monitor(payload: MonitorCreate, session: SessionDep) -> Monitor:
-    total = session.scalar(select(func.count()).select_from(Monitor)) or 0
+def create_monitor(payload: MonitorCreate, session: SessionDep, user: CurrentUserDep) -> Monitor:
+    total = session.scalar(select(func.count()).select_from(Monitor).where(Monitor.owner_id == user.id)) or 0
     if total >= MAX_MONITORS:
-        raise HTTPException(status_code=409, detail=f"The free workspace supports up to {MAX_MONITORS} monitors")
-    monitor = Monitor(**payload.model_dump(mode="json"))
+        raise HTTPException(status_code=409, detail=f"Tu cuenta admite hasta {MAX_MONITORS} monitores")
+    monitor = Monitor(owner_id=user.id, **payload.model_dump(mode="json"))
     session.add(monitor)
     session.commit()
     session.refresh(monitor)
@@ -135,15 +151,16 @@ def create_monitor(payload: MonitorCreate, session: SessionDep) -> Monitor:
 
 
 @app.post("/api/analyze", response_model=AnalysisRead, tags=["checks"])
-async def analyze_url(payload: AnalyzeRequest, session: SessionDep) -> AnalysisRead:
+async def analyze_url(payload: AnalyzeRequest, session: SessionDep, user: CurrentUserDep) -> AnalysisRead:
     normalized_url = str(payload.url)
-    monitor = session.scalar(select(Monitor).where(Monitor.url == normalized_url))
+    monitor = session.scalar(select(Monitor).where(Monitor.url == normalized_url, Monitor.owner_id == user.id))
     if monitor is None:
-        total = session.scalar(select(func.count()).select_from(Monitor)) or 0
+        total = session.scalar(select(func.count()).select_from(Monitor).where(Monitor.owner_id == user.id)) or 0
         if total >= MAX_MONITORS:
-            raise HTTPException(status_code=409, detail=f"The free workspace supports up to {MAX_MONITORS} monitors")
+            raise HTTPException(status_code=409, detail=f"Tu cuenta admite hasta {MAX_MONITORS} monitores")
         hostname = urlparse(normalized_url).hostname or "Nuevo servicio"
         monitor = Monitor(
+            owner_id=user.id,
             name=payload.name or hostname,
             url=normalized_url,
             timeout_seconds=payload.timeout_seconds,
@@ -163,8 +180,8 @@ async def analyze_url(payload: AnalyzeRequest, session: SessionDep) -> AnalysisR
 
 
 @app.patch("/api/monitors/{monitor_id}", response_model=MonitorRead, tags=["monitors"])
-def update_monitor(monitor_id: str, payload: MonitorUpdate, session: SessionDep) -> Monitor:
-    monitor = session.get(Monitor, monitor_id)
+def update_monitor(monitor_id: str, payload: MonitorUpdate, session: SessionDep, user: CurrentUserDep) -> Monitor:
+    monitor = session.scalar(select(Monitor).where(Monitor.id == monitor_id, Monitor.owner_id == user.id))
     if monitor is None:
         raise HTTPException(status_code=404, detail="Monitor not found")
     for field, value in payload.model_dump(exclude_unset=True).items():
@@ -179,8 +196,8 @@ def update_monitor(monitor_id: str, payload: MonitorUpdate, session: SessionDep)
 
 
 @app.delete("/api/monitors/{monitor_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["monitors"])
-def delete_monitor(monitor_id: str, session: SessionDep) -> Response:
-    monitor = session.get(Monitor, monitor_id)
+def delete_monitor(monitor_id: str, session: SessionDep, user: CurrentUserDep) -> Response:
+    monitor = session.scalar(select(Monitor).where(Monitor.id == monitor_id, Monitor.owner_id == user.id))
     if monitor is None:
         raise HTTPException(status_code=404, detail="Monitor not found")
     session.delete(monitor)
@@ -189,8 +206,8 @@ def delete_monitor(monitor_id: str, session: SessionDep) -> Response:
 
 
 @app.post("/api/monitors/{monitor_id}/check", response_model=CheckRead, tags=["checks"])
-async def run_single_check(monitor_id: str, session: SessionDep) -> CheckResult:
-    monitor = session.get(Monitor, monitor_id)
+async def run_single_check(monitor_id: str, session: SessionDep, user: CurrentUserDep) -> CheckResult:
+    monitor = session.scalar(select(Monitor).where(Monitor.id == monitor_id, Monitor.owner_id == user.id))
     if monitor is None:
         raise HTTPException(status_code=404, detail="Monitor not found")
     if not monitor.is_active:
@@ -231,10 +248,11 @@ async def run_due_checks(
 
 
 @app.get("/api/incidents", response_model=list[IncidentRead], tags=["incidents"])
-def list_incidents(session: SessionDep, open_only: bool = False) -> list[IncidentRead]:
+def list_incidents(session: SessionDep, user: CurrentUserDep, open_only: bool = False) -> list[IncidentRead]:
     query = (
         select(Incident, Monitor.name, Monitor.url)
         .join(Monitor, Incident.monitor_id == Monitor.id)
+        .where(Monitor.owner_id == user.id)
         .order_by(Incident.started_at.desc())
     )
     if open_only:
@@ -256,11 +274,12 @@ def list_incidents(session: SessionDep, open_only: bool = False) -> list[Inciden
 
 
 @app.get("/api/checks/recent", response_model=list[RecentCheckRead], tags=["checks"])
-def recent_checks(session: SessionDep, limit: int = 50) -> list[RecentCheckRead]:
+def recent_checks(session: SessionDep, user: CurrentUserDep, limit: int = 50) -> list[RecentCheckRead]:
     safe_limit = min(max(limit, 1), 200)
     rows = session.execute(
         select(CheckResult, Monitor.name, Monitor.url)
         .join(Monitor, CheckResult.monitor_id == Monitor.id)
+        .where(Monitor.owner_id == user.id)
         .order_by(CheckResult.checked_at.desc())
         .limit(safe_limit)
     ).all()
@@ -281,20 +300,31 @@ def recent_checks(session: SessionDep, limit: int = 50) -> list[RecentCheckRead]
 
 
 @app.get("/api/overview", tags=["overview"])
-def overview(session: SessionDep) -> dict[str, object]:
-    total = session.scalar(select(func.count()).select_from(Monitor)) or 0
-    active = session.scalar(select(func.count()).select_from(Monitor).where(Monitor.is_active.is_(True))) or 0
-    incidents = session.scalar(select(func.count()).select_from(Incident).where(Incident.status == IncidentStatus.OPEN)) or 0
-    average_latency = session.scalar(select(func.avg(CheckResult.latency_ms)).where(CheckResult.latency_ms.is_not(None)))
-    total_checks = session.scalar(select(func.count()).select_from(CheckResult)) or 0
+def overview(session: SessionDep, user: CurrentUserDep) -> dict[str, object]:
+    total = session.scalar(select(func.count()).select_from(Monitor).where(Monitor.owner_id == user.id)) or 0
+    active = session.scalar(select(func.count()).select_from(Monitor).where(Monitor.owner_id == user.id, Monitor.is_active.is_(True))) or 0
+    incidents = session.scalar(
+        select(func.count()).select_from(Incident).join(Monitor, Incident.monitor_id == Monitor.id).where(
+            Monitor.owner_id == user.id, Incident.status == IncidentStatus.OPEN
+        )
+    ) or 0
+    average_latency = session.scalar(
+        select(func.avg(CheckResult.latency_ms)).join(Monitor, CheckResult.monitor_id == Monitor.id).where(
+            Monitor.owner_id == user.id, CheckResult.latency_ms.is_not(None)
+        )
+    )
+    total_checks = session.scalar(
+        select(func.count()).select_from(CheckResult).join(Monitor, CheckResult.monitor_id == Monitor.id).where(Monitor.owner_id == user.id)
+    ) or 0
     healthy_checks = session.scalar(
-        select(func.count()).select_from(CheckResult).where(
+        select(func.count()).select_from(CheckResult).join(Monitor, CheckResult.monitor_id == Monitor.id).where(
+            Monitor.owner_id == user.id,
             CheckResult.status.in_([ServiceStatus.OPERATIONAL, ServiceStatus.DEGRADED])
         )
     ) or 0
     status_counts = {status.value: 0 for status in ServiceStatus}
     for monitor_status, count in session.execute(
-        select(Monitor.status, func.count()).group_by(Monitor.status)
+        select(Monitor.status, func.count()).where(Monitor.owner_id == user.id).group_by(Monitor.status)
     ).all():
         status_counts[str(monitor_status)] = count
     return {
