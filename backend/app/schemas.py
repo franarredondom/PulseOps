@@ -28,6 +28,8 @@ class MonitorRead(BaseModel):
     url: str
     interval_minutes: int
     timeout_seconds: int
+    expected_status: int
+    latency_threshold_ms: int
     is_active: bool
     status: str
     consecutive_failures: int
@@ -49,10 +51,10 @@ class CheckRead(BaseModel):
 
 
 class IncidentRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: str
     monitor_id: str
+    monitor_name: str
+    monitor_url: str
     title: str
     status: str
     cause: str | None
@@ -65,3 +67,21 @@ class RunSummary(BaseModel):
     operational: int
     degraded: int
     down: int
+
+
+class AnalyzeRequest(BaseModel):
+    url: HttpUrl
+    name: str | None = Field(default=None, min_length=2, max_length=120)
+    timeout_seconds: int = Field(default=8, ge=1, le=30)
+    expected_status: int = Field(default=200, ge=100, le=599)
+    latency_threshold_ms: int = Field(default=750, ge=50, le=30_000)
+
+
+class AnalysisRead(BaseModel):
+    monitor: MonitorRead
+    check: CheckRead
+
+
+class RecentCheckRead(CheckRead):
+    monitor_name: str
+    monitor_url: str

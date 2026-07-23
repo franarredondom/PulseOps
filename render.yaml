@@ -12,9 +12,7 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: CORS_ORIGINS
-        value: https://pulseops-fran.fraanciscaam123.chatgpt.site
-      - key: CORS_ORIGIN_REGEX
-        value: ^https://pulseops-dashboard(?:-[a-z0-9]+)?\.onrender\.com$
+        value: https://pulseops-dashboard.onrender.com
       - key: CRON_SECRET
         generateValue: true
       - key: FAILURE_THRESHOLD
@@ -23,8 +21,8 @@ services:
   - type: web
     name: pulseops-dashboard
     runtime: static
-    buildCommand: npm ci && npm run build:static
-    staticPublishPath: ./dist-static
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
     autoDeployTrigger: commit
     routes:
       - type: rewrite

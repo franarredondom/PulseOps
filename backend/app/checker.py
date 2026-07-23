@@ -1,6 +1,9 @@
 import asyncio
 from dataclasses import dataclass
+from ipaddress import ip_address
+import socket
 from time import perf_counter
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import select
@@ -18,9 +21,30 @@ class ProbeResult:
     error: str | None = None
 
 
+async def ensure_public_target(raw_url: str) -> None:
+    hostname = urlparse(raw_url).hostname
+    if not hostname:
+        raise ValueError("The URL does not include a valid hostname")
+
+    addresses = await asyncio.to_thread(
+        socket.getaddrinfo,
+        hostname,
+        None,
+        type=socket.SOCK_STREAM,
+    )
+    if not addresses:
+        raise ValueError("The hostname could not be resolved")
+
+    for address_info in addresses:
+        address = ip_address(address_info[4][0])
+        if not address.is_global:
+            raise ValueError("Private or reserved network targets are not allowed")
+
+
 async def probe(monitor: Monitor) -> ProbeResult:
     started = perf_counter()
     try:
+        await ensure_public_target(monitor.url)
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=monitor.timeout_seconds,
@@ -35,6 +59,8 @@ async def probe(monitor: Monitor) -> ProbeResult:
     except httpx.TimeoutException:
         return ProbeResult(ServiceStatus.DOWN, None, None, "Request timed out")
     except httpx.HTTPError as error:
+        return ProbeResult(ServiceStatus.DOWN, None, None, str(error)[:300])
+    except (OSError, ValueError) as error:
         return ProbeResult(ServiceStatus.DOWN, None, None, str(error)[:300])
 
 

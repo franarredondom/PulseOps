@@ -7,7 +7,6 @@ import os
 class Settings:
     database_url: str
     cors_origins: tuple[str, ...]
-    cors_origin_regex: str | None
     cron_secret: str
     failure_threshold: int
 
@@ -28,7 +27,6 @@ def get_settings() -> Settings:
     return Settings(
         database_url=database_url,
         cors_origins=origins,
-        cors_origin_regex=os.getenv("CORS_ORIGIN_REGEX") or None,
         cron_secret=os.getenv("CRON_SECRET", "local-development-secret"),
         failure_threshold=max(1, int(os.getenv("FAILURE_THRESHOLD", "3"))),
     )
