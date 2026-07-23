@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
 from app.checker import ProbeResult, ensure_public_target  # noqa: E402
-from app.auditor import FetchedPage, build_report  # noqa: E402
+from app.auditor import FetchedPage, build_report, looks_like_html  # noqa: E402
 from app.models import ServiceStatus  # noqa: E402
 
 
@@ -117,6 +117,13 @@ def test_audit_report_uses_real_html_signals() -> None:
     assert report["content"]["imagesWithAlt"] == 1
     assert report["content"]["internalLinks"] == 1
     assert report["content"]["externalLinks"] == 1
+
+
+def test_html_sniffing_handles_incorrect_content_type() -> None:
+    assert looks_like_html(b"\n\xef\xbb\xbf<!doctype html><html><head></head></html>")
+    assert looks_like_html(b"<html lang='es'><body>Contenido</body></html>")
+    assert not looks_like_html(b"local_rate_limited")
+    assert not looks_like_html(b'{"status":"ok"}')
 
 
 def test_audit_endpoint_persists_report(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from html.parser import HTMLParser
 import re
@@ -14,7 +15,13 @@ from .checker import ensure_public_target
 MAX_HTML_BYTES = 2_000_000
 MAX_AUXILIARY_BYTES = 256_000
 MAX_REDIRECTS = 5
-USER_AGENT = "PulseOps-Web-Auditor/1.0 (+https://github.com/franarredondom/PulseOps)"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+REQUEST_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.7",
+    "Accept-Language": "es-CL,es;q=0.9,en;q=0.7",
+    "Cache-Control": "no-cache",
+}
 
 
 class AuditError(Exception):
@@ -116,13 +123,20 @@ async def _read_limited(response: httpx.Response, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+def looks_like_html(body: bytes) -> bool:
+    prefix = body[:16_384].decode("utf-8", errors="ignore").lstrip("\ufeff\x00\t\r\n ").lower()
+    return prefix.startswith(("<!doctype html", "<html", "<head", "<body")) or "<html" in prefix[:2_000]
+
+
 async def fetch_page(raw_url: str) -> FetchedPage:
     current_url = raw_url
     redirects: list[str] = []
     started = perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=15, headers={"User-Agent": USER_AGENT}) as client:
-            for _ in range(MAX_REDIRECTS + 1):
+        async with httpx.AsyncClient(timeout=15, headers=REQUEST_HEADERS) as client:
+            redirect_count = 0
+            rate_limit_retries = 0
+            while redirect_count <= MAX_REDIRECTS:
                 await ensure_public_target(current_url)
                 async with client.stream("GET", current_url, follow_redirects=False) as response:
                     if response.is_redirect:
@@ -133,11 +147,23 @@ async def fetch_page(raw_url: str) -> FetchedPage:
                         if urlparse(current_url).scheme not in {"http", "https"}:
                             raise AuditError("La redirección usa un protocolo no permitido")
                         redirects.append(current_url)
+                        redirect_count += 1
                         continue
-                    content_type = response.headers.get("content-type", "").lower()
-                    if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
-                        raise AuditError(f"La URL no entrega una página HTML ({content_type or 'tipo desconocido'})")
                     body = await _read_limited(response, MAX_HTML_BYTES)
+                    if response.status_code == 429 and rate_limit_retries < 2:
+                        retry_after = response.headers.get("retry-after", "")
+                        delay = min(4.0, float(retry_after)) if retry_after.replace(".", "", 1).isdigit() else 1.5 * (rate_limit_retries + 1)
+                        rate_limit_retries += 1
+                        await asyncio.sleep(delay)
+                        continue
+                    if response.status_code == 429:
+                        raise AuditError("El sitio limitó temporalmente las solicitudes del auditor (HTTP 429). Espera un minuto e inténtalo otra vez.")
+                    if response.status_code >= 400:
+                        raise AuditError(f"El sitio rechazó la visita del auditor con HTTP {response.status_code}")
+                    content_type = response.headers.get("content-type", "").lower()
+                    declared_html = "text/html" in content_type or "application/xhtml+xml" in content_type
+                    if not declared_html and not looks_like_html(body):
+                        raise AuditError(f"La URL no entrega una página HTML ({content_type or 'tipo desconocido'})")
                     return FetchedPage(
                         requested_url=raw_url,
                         final_url=str(response.url),
@@ -159,7 +185,7 @@ async def fetch_page(raw_url: str) -> FetchedPage:
 async def resource_exists(url: str) -> bool:
     try:
         await ensure_public_target(url)
-        async with httpx.AsyncClient(timeout=6, headers={"User-Agent": USER_AGENT}, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=6, headers=REQUEST_HEADERS, follow_redirects=False) as client:
             async with client.stream("GET", url) as response:
                 if response.status_code >= 400:
                     return False
